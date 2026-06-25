@@ -45,6 +45,9 @@ export class Hud {
 
     const body = document.createElement('div');
     el.appendChild(body);
+    // 默认折叠，保持"看起来像截图"的干净游戏视图；点 ▸ 展开做性能测试
+    body.style.display = 'none';
+    collapse.textContent = '▸';
 
     // —— 测量三档预设 ——
     body.appendChild(section('测量档位（对比协议）'));

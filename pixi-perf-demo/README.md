@@ -25,6 +25,17 @@ npm run preview -- --host   # 本地预览构建产物
 
 ---
 
+## 一·补、画面对齐（全量 HUD）
+
+为与线上 DOM 版（https://fieldplay.lidoartcenter.com 的 `FieldPlay.html`）**画面对齐、公平对比**，
+本 DEMO 在 Pixi 场景之上叠加了**全量 HUD**（`src/ui/gameHud.ts`，DOM 层、挂在 `#fp-root` 内随舞台缩放）：
+昼夜时钟+实时天气芯片、土地健康条（杂草率/闲置率）、手动⇄托管切换、巡田路径、AI 自主经营学习面板、
+市场行情面板、托管状态条、Logo 木牌、全屏/重置、右侧图鉴导航、仓库/商店/充电站标牌、机器人动作气泡、
+极端天气预告条 —— 均像素还原原型样式、假数据驱动、轻交互。
+
+> 架构（符合 CLAUDE.md）：**农田场景 = Pixi/WebGL**（重效果在 GPU），**业务 UI = DOM**（开发效率/像素还原）。
+> HUD 层 `pointer-events:none` 默认穿透，仅交互件 `auto`，地块点击仍由 Pixi 命中。
+
 ## 二、内建测量工具（任务书五 / 六章）
 
 - **右上角 FPS / 内存表**（自实现，基于 Pixi Ticker）：当前 / 平均 / 最低 FPS、帧时(ms)、JS 堆内存(Chrome)、

@@ -21,7 +21,7 @@ export class StatsMeter {
   constructor(parent: HTMLElement) {
     const el = document.createElement('div');
     el.style.cssText = [
-      'position:fixed', 'top:8px', 'right:8px', 'z-index:1000',
+      'position:fixed', 'bottom:8px', 'right:8px', 'z-index:1000',
       'font-family:"Baloo 2",ui-monospace,monospace', 'font-size:12px', 'line-height:1.45',
       'color:#bff05f', 'background:rgba(11,24,32,.82)', 'border:1px solid rgba(150,206,77,.35)',
       'border-radius:10px', 'padding:7px 9px', 'min-width:148px', 'pointer-events:none',

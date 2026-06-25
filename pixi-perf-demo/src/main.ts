@@ -11,6 +11,7 @@ import { DayNight } from './scene/daynight';
 import { WeatherOverlay } from './scene/weather';
 import { Particles } from './scene/particles';
 import { Hud, type SceneTier } from './ui/hud';
+import { GameHud } from './ui/gameHud';
 import type { WeatherType } from './data/scenes';
 
 async function boot() {
@@ -116,6 +117,9 @@ async function boot() {
     onTier: applyTier,
   });
 
+  // 全量 HUD（DOM 叠加，挂在 #fp-root 内随舞台缩放）
+  const gameHud = new GameHud(root, world);
+
   // 默认进入「常规」档
   applyTier('normal');
 
@@ -141,6 +145,7 @@ async function boot() {
     robot.update(world, dtMS);
     daynight.update(world.tod, world.toggles.dayTint, dtMS);
     particles.update(dtMS);
+    gameHud.update(dtMS);
 
     // 仪表读数
     stats.tick(ticker.deltaMS);

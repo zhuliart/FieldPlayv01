@@ -59,6 +59,8 @@ export class World {
   mode: 'manual' | 'auto' = 'auto';
   stress = false;
 
+  robotAction = '待命中…'; // 托管状态条/气泡文案（假数据，仅供画面）
+
   weather: { type: WeatherType; elapsedMS: number; durMS: number } = { type: 'clear', elapsedMS: 0, durMS: 0 };
   private weatherCooldownMS = 4000;
 
@@ -191,10 +193,13 @@ export class World {
       const t = Math.min(1, this.segElapsed / this.segDur);
       this.robot.left = a.left + (b.left - a.left) * t;
       this.robot.top = a.top + (b.top - a.top) * t;
+      this.robotAction = b.plotId != null ? `巡田作业 · ${b.plotId + 1} 号地…` : '返回充电站补能…';
       if (t >= 1) {
         // 抵达路点：若是地块中心 → 触发浇水/施肥粒子
         if (b.plotId != null && this.toggles.particles) {
-          this.pendingBursts.push({ plotId: b.plotId, kind: Math.random() < 0.3 ? 'fert' : 'water' });
+          const fert = Math.random() < 0.3;
+          this.pendingBursts.push({ plotId: b.plotId, kind: fert ? 'fert' : 'water' });
+          this.robotAction = fert ? '精准施肥中…' : '定点浇水中…';
         }
         this.segIdx = (this.segIdx + 1) % this.path.length;
         this.startSeg();
@@ -202,7 +207,24 @@ export class World {
     } else {
       this.robot.moving = false;
       this.robot.module = null;
+      this.robotAction = '待命中…';
     }
+  }
+
+  // 田间健康统计（杂草率 / 闲置率），供 HUD 健康条
+  healthStats(): { weedPct: number; idlePct: number; overCount: number } {
+    const tot = this.plots.length || 1;
+    let weedUnits = 0;
+    let idle = 0;
+    for (const p of this.plots) {
+      weedUnits += Math.min(3, p.weeds);
+      if (!p.slots.some((sl) => sl.growth > 0)) idle++;
+    }
+    return {
+      weedPct: Math.round((weedUnits / (tot * 3)) * 100),
+      idlePct: Math.round((idle / tot) * 100),
+      overCount: 0,
+    };
   }
 
   triggerWeather(type: WeatherType) {
