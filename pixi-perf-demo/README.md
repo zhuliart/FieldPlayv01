@@ -36,6 +36,13 @@ npm run preview -- --host   # 本地预览构建产物
 > 架构（符合 CLAUDE.md）：**农田场景 = Pixi/WebGL**（重效果在 GPU），**业务 UI = DOM**（开发效率/像素还原）。
 > HUD 层 `pointer-events:none` 默认穿透，仅交互件 `auto`，地块点击仍由 Pixi 命中。
 
+### 作物行为机制（逐项移植原型，非"看起来像"）
+
+- **每株生长随机**：速率 `rate=0.6+gh*0.8`（按位置稳定 0.6–1.4）、大小抖动 `sizeJit=0.84+hash(11)*0.34`、自然倾角 `restAng=(hash(12)-0.5)*16`——公式/种子与原型一致。
+- **缺水→枯死→老化生命周期**（`world.ts lifeTick`，固定 tick 跑离散逻辑）：湿度 `moist`/缺水 `dry`/涝渍 `flood`/受冻 `frost`/干旱 `parch` 累积；阶段耐旱阈值 `DRY_DEATH=[3,4,6,8]`；暴雨涝死(`flood≥4` 概率 `0.18·wInt`)、霜冻冻死(`0.17·wInt`)、旱死、成熟过熟(`age≥16`)枯萎；浇水（机器人巡田/点地块）复位缺水。死亡后短暂展示残株再补种，田间持续繁忙。
+- **倒伏（lodging）随机**（`field.ts`）：受灾/缺水/过熟/死亡 → `bend`，再用 `hash(1)` 定倒向、`hash(2)` 定占比/延迟、`hash(3)` 定最大角、`hash(4)` 定倒速（0.85–2.75s），`ang=sgn·amt·mag+(hash3-.5)·18`，**绕根（anchor）旋转**、按株平滑——与原型一致。
+- **应激滤镜**：旱黄 / 冻蓝 / 涝暗 / 枯褐 / 过熟褪色，用 `tint`（multiply）近似原型 CSS filter，**不破合批**（GPU 友好）。
+
 ## 二、内建测量工具（任务书五 / 六章）
 
 - **右上角 FPS / 内存表**（自实现，基于 Pixi Ticker）：当前 / 平均 / 最低 FPS、帧时(ms)、JS 堆内存(Chrome)、

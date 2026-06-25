@@ -8,7 +8,20 @@ export interface Slot {
   crop: CropKey;
   growth: number; // 0..400（stage = floor/100）
   rate: number; // 个体生长速率 0.6..1.4
+  // —— 应激 / 生命周期状态（移植原型 tick 逐项）——
+  moist: number; // 土壤湿度
+  dry: number; // 缺水累积 → 达阈值旱死
+  flood: number; // 涝渍累积（暴雨）→ 概率烂根
+  frost: number; // 受冻累积（霜冻）→ 概率冻死
+  parch: number; // 干旱累积
+  age: number; // 成熟后老化（过熟枯萎）
+  dead: boolean;
+  deathKind: '' | 'dry' | 'rot' | 'frozen' | 'aged';
+  respawnT: number; // 死亡后重生计时(ms)，保持田间持续繁忙
 }
+
+// 各 stage 的耐旱阈值（发芽/幼苗脆弱、生长期更耐旱），移植原型 DRY_DEATH
+export const DRY_DEATH = [3, 4, 6, 8];
 
 export interface Plot {
   id: number;
@@ -63,6 +76,7 @@ export class World {
 
   weather: { type: WeatherType; elapsedMS: number; durMS: number } = { type: 'clear', elapsedMS: 0, durMS: 0 };
   private weatherCooldownMS = 4000;
+  private lifeTickAcc = 0;
 
   plots: Plot[] = [];
   robot: RobotState = { ...MAP.robotHome, face: Math.PI, moving: false, module: null };
@@ -99,7 +113,11 @@ export class World {
       const slots: Slot[] = pts.map((pt) => {
         const gh = (((Math.round(pt.x * 7.3 + pt.y * 13.1) % 100) + 100) % 100) / 100;
         const rate = 0.6 + gh * 0.8;
-        return { pt, crop, growth: stage * 100, rate };
+        return {
+          pt, crop, growth: stage * 100, rate,
+          moist: stage < 4 ? 3 : 0, dry: 0, flood: 0, frost: 0, parch: 0, age: 0,
+          dead: false, deathKind: '' as const, respawnT: 0,
+        };
       });
       this.plots.push({ id: i, slots, weeds: i % 4 === 0 ? 2 : i % 3 === 0 ? 1 : 0 });
     }
@@ -169,18 +187,31 @@ export class World {
       }
     }
 
-    // —— 作物生长 ——
-    const gSpeed = (this.stress ? 0.06 : 0.022) * dtMS; // 每毫秒 growth 增量基准
+    // —— 作物生长（连续，平滑变大）+ 应激/致死生命周期（固定 tick，移植原型）——
     const wInt = this.weatherIntensity();
-    const stall = this.weather.type === 'frost' ? 0.15 : this.weather.type === 'rain' ? 0.55 : 1; // 极端天气拖慢
+    const wx = this.weather.type;
+    const gSpeed = (this.stress ? 0.06 : 0.022) * dtMS;
+    const stall = wx === 'frost' ? 0.15 : wx === 'rain' ? 0.55 : 1; // 极端天气拖慢
     for (const p of this.plots) {
       for (const sl of p.slots) {
-        sl.growth += gSpeed * sl.rate * (1 - wInt * (1 - stall) * 0.6);
-        if (sl.growth >= 400) {
-          // 成熟：压力档循环重置以持续换贴图；常规保持成熟
-          sl.growth = this.stress ? 4 : 400;
+        if (sl.dead) {
+          sl.respawnT -= dtMS;
+          if (sl.respawnT <= 0) this.respawn(sl); // 重生 → 田间持续繁忙
+          continue;
+        }
+        if (sl.growth < 400) {
+          const waterFactor = sl.dry > 0 ? 0.25 : 1; // 缺水拖慢生长
+          sl.growth += gSpeed * sl.rate * (1 - wInt * (1 - stall) * 0.6) * waterFactor;
+          if (sl.growth >= 400) sl.growth = 400;
         }
       }
+    }
+    // 应激/致死按固定节奏跑，保留原型离散阈值与概率
+    this.lifeTickAcc += dtMS;
+    const tickMS = this.stress ? 280 : 700;
+    while (this.lifeTickAcc >= tickMS) {
+      this.lifeTickAcc -= tickMS;
+      this.lifeTick();
     }
 
     // —— 机器人巡田（仅托管模式）——
@@ -195,10 +226,11 @@ export class World {
       this.robot.top = a.top + (b.top - a.top) * t;
       this.robotAction = b.plotId != null ? `巡田作业 · ${b.plotId + 1} 号地…` : '返回充电站补能…';
       if (t >= 1) {
-        // 抵达路点：若是地块中心 → 触发浇水/施肥粒子
-        if (b.plotId != null && this.toggles.particles) {
+        // 抵达路点：地块中心 → 浇水复位缺水（务实作业）+ 触发粒子
+        if (b.plotId != null) {
           const fert = Math.random() < 0.3;
-          this.pendingBursts.push({ plotId: b.plotId, kind: fert ? 'fert' : 'water' });
+          if (!fert) this.applyWater(b.plotId);
+          if (this.toggles.particles) this.pendingBursts.push({ plotId: b.plotId, kind: fert ? 'fert' : 'water' });
           this.robotAction = fert ? '精准施肥中…' : '定点浇水中…';
         }
         this.segIdx = (this.segIdx + 1) % this.path.length;
@@ -225,6 +257,69 @@ export class World {
       idlePct: Math.round((idle / tot) * 100),
       overCount: 0,
     };
+  }
+
+  // 一次应激/致死 tick —— 逐项移植原型 tick()：湿度/缺水/涝渍/受冻/干旱 + 阶段耐旱阈值 + 致死概率 + 过熟老化
+  private lifeTick() {
+    const wInt = this.weatherIntensity();
+    const wx = this.weather.type;
+    const wxRate = 0.3 + wInt * 1.1; // 灾害累积速率随强度
+    for (const p of this.plots) {
+      for (const sl of p.slots) {
+        if (sl.dead) continue;
+        // 非当前灾害的计数器缓解
+        if (wx !== 'rain') sl.flood = Math.max(0, sl.flood - 1);
+        if (wx !== 'frost') sl.frost = Math.max(0, sl.frost - 1);
+        if (wx !== 'drought') sl.parch = Math.max(0, sl.parch - 1);
+        const stage = Math.min(4, Math.floor(sl.growth / 100));
+        if (sl.growth >= 400) {
+          // 成熟：老化 → 过熟枯萎
+          sl.age += 1;
+          if (sl.age >= 16) this.kill(sl, 'aged');
+          continue;
+        }
+        if (wx === 'rain') {
+          sl.moist = Math.max(sl.moist, 2); sl.dry = 0;
+          sl.flood += wxRate;
+          if (sl.flood >= 4 && Math.random() < 0.18 * wInt) this.kill(sl, 'rot');
+        } else if (wx === 'frost') {
+          sl.frost += wxRate; sl.moist = Math.max(0, sl.moist - 1);
+          if (sl.frost >= 4 && Math.random() < 0.17 * wInt) this.kill(sl, 'frozen');
+        } else if (wx === 'drought') {
+          sl.parch += wxRate;
+          if (sl.moist > 0) { sl.moist = Math.max(0, sl.moist - (wInt > 0.5 ? 2 : 1)); sl.dry = 0; }
+          else { sl.dry += wInt > 0.5 ? 2 : 1; if (sl.dry >= (DRY_DEATH[stage] || 5)) this.kill(sl, 'dry'); }
+        } else if (wx === 'cloudy' || wx === 'lightrain') {
+          sl.dry = 0; sl.moist = Math.max(sl.moist, 2); // 阴雨补水
+        } else {
+          // 晴：耗水，断水累积缺水 → 旱死
+          if (sl.moist > 0) { sl.moist -= 1; sl.dry = 0; }
+          else { sl.dry += 1; if (sl.dry >= (DRY_DEATH[stage] || 5)) this.kill(sl, 'dry'); }
+        }
+      }
+    }
+  }
+
+  private kill(sl: Slot, kind: Slot['deathKind']) {
+    sl.dead = true;
+    sl.deathKind = kind;
+    sl.respawnT = this.stress ? 1800 : 3400; // 短暂展示倒伏/枯死的"残株"，再补种
+  }
+
+  private respawn(sl: Slot) {
+    sl.dead = false; sl.deathKind = ''; sl.growth = 0;
+    sl.moist = 3; sl.dry = 0; sl.flood = 0; sl.frost = 0; sl.parch = 0; sl.age = 0;
+  }
+
+  // 浇水：复位该地块所有活株的缺水/湿度（机器人巡田到点 + 手动点地块）
+  applyWater(plotId: number) {
+    const p = this.plots[plotId];
+    if (!p) return;
+    for (const sl of p.slots) {
+      if (sl.dead) continue;
+      sl.moist = 4; sl.dry = 0;
+      if (sl.parch > 0) sl.parch = Math.max(0, sl.parch - 2);
+    }
   }
 
   triggerWeather(type: WeatherType) {
@@ -258,6 +353,7 @@ export class World {
 
   // 触发一次手动浇水/施肥（点地块）
   burst(plotId: number, kind: 'water' | 'fert') {
+    if (kind === 'water') this.applyWater(plotId);
     this.pendingBursts.push({ plotId, kind });
   }
 

@@ -141,7 +141,7 @@ async function boot() {
 
     background.update(world.tod, world.weather.type as WeatherType, world.weatherIntensity(), world.toggles.bgFade, dtMS);
     weatherOverlay.update(world, dtMS);
-    field.update(world);
+    field.update(world, dtMS);
     robot.update(world, dtMS);
     daynight.update(world.tod, world.toggles.dayTint, dtMS);
     particles.update(dtMS);
