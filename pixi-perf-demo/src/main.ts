@@ -87,16 +87,18 @@ async function boot() {
   const applyTier = (tier: SceneTier) => {
     if (tier === 'idle') {
       setStress(false);
+      world.live = false; // 静置：固定正午，不走实时
       world.mode = 'manual';
       world.todAuto = false;
       world.tod = 0.5; // 正午静置
       world.triggerWeather('clear');
     } else if (tier === 'normal') {
       setStress(false);
+      world.live = true; // 常规：实时天气 + 农场当地时（原型对齐默认）
       world.mode = 'auto';
       world.todAuto = true;
-      world.triggerWeather('clear');
     } else {
+      world.live = false; // 压力档：加速合成时间 + 强制灾害（性能压测）
       world.mode = 'auto';
       world.todAuto = true;
       setStress(true);

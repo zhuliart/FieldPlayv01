@@ -1,5 +1,5 @@
 import { dayState, WEATHER_META, isDisaster, wxPhase } from '../data/scenes';
-import { CROPS, CROP_KEYS, type CropKey } from '../data/crops';
+import { CROP_KEYS, type CropKey } from '../data/crops';
 import { pctX, pctY } from '../sim/layout';
 import type { World } from '../sim/world';
 
@@ -10,56 +10,16 @@ import type { World } from '../sim/world';
 const CROP_ICON: Record<CropKey, string> = { tomato: '🍅', lettuce: '🥬', corn: '🌽', chili: '🌶️' };
 const CROP_CN: Record<CropKey, string> = { tomato: '番茄', lettuce: '生菜', corn: '玉米', chili: '辣椒' };
 
-interface Biz {
-  funds: number;
-  base: number;
-  trades: number;
-  sells: number;
-  deaths: number;
-  explore: number;
-  stock: number;
-  stockVal: number;
-  wh: number;
-  whVal: number;
-  decayPct: number;
-  fee: number;
-  sellTh: number;
-  storeBias: number;
-  seed: number;
-  decayLoss: number;
-  feesPaid: number;
-  idleTax: number;
-  spike: number;
-  last: string;
-  market: Record<CropKey, number>;
-  marketPrev: Record<CropKey, number>;
-}
-
-const LAST_MSGS = [
-  '行情看涨玉米，优先出售；番茄先囤货等高点。',
-  '连阴雨压低生菜价，转囤货保值。',
-  '辣椒市价回升，开始分批出货。',
-  '闲置地块偏多，安排补种降低课税风险。',
-  '探索新策略：提高番茄囤货倾向。',
-];
+// AI 经营起始资金（与 world AI_START 对齐）—— 用于「本期盈亏」基准
+const AI_BASE = 2500;
 
 export class GameHud {
   readonly root: HTMLDivElement;
   private aiOpen = true;
-  private biz: Biz = {
-    funds: 10778, base: 2500, trades: 42, sells: 28, deaths: 5, explore: 0.18,
-    stock: 6, stockVal: 1820, wh: 9, whVal: 2640, decayPct: 8, fee: 1.2,
-    sellTh: 5.2, storeBias: 0.5, seed: 18, decayLoss: 320, feesPaid: 145, idleTax: 88, spike: 210,
-    last: LAST_MSGS[0],
-    market: { tomato: 1.04, lettuce: 0.92, corn: 1.18, chili: 1.0 },
-    marketPrev: { tomato: 1.0, lettuce: 0.95, corn: 1.1, chili: 1.0 },
-  };
-  private acc = 0;
 
   // 动态引用
   private r: Record<string, HTMLElement> = {};
   private toastBox: HTMLDivElement;
-  private toastT: ReturnType<typeof setTimeout> | null = null;
 
   constructor(parent: HTMLElement, private world: World) {
     const root = E('div', 'position:absolute; inset:0; width:1280px; height:720px; z-index:10; pointer-events:none; font-family:"Noto Sans SC",sans-serif;');
@@ -98,8 +58,10 @@ export class GameHud {
     this.r.wxIcon = E('span', 'font-size:16px;', { text: '🌦️' });
     const col2 = E('div', 'display:flex; flex-direction:column; line-height:1.1;');
     this.r.wxCond = E('span', 'font-size:12px; font-weight:800; color:#eaf2fb; white-space:nowrap;', { text: '小雨 22°', cls: 'fp-num' });
-    const place = E('span', 'font-size:9px; font-weight:700; color:#a9c6b1; white-space:nowrap;', { text: '南江·实时' });
-    col2.append(this.r.wxCond, place);
+    this.r.wxPlace = E('span', 'font-size:9px; font-weight:700; color:#a9e6b1; white-space:nowrap; cursor:pointer;', { text: '⇄ 南江·实时' });
+    this.r.wxPlace.title = '点击切换 实时 / 加速演示';
+    this.r.wxPlace.onclick = () => this.toggleLive();
+    col2.append(this.r.wxCond, this.r.wxPlace);
     box.append(this.r.dayIcon, col1, div, this.r.wxIcon, col2);
     this.root.appendChild(box);
   }
@@ -169,7 +131,7 @@ export class GameHud {
   private buildReset() {
     const b = E('button', 'position:absolute; top:11px; right:327px; width:90px; height:90px; border:3px solid #b06a3f; border-radius:16px; background:linear-gradient(#f7d9c8,#eebda3); cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; box-shadow:0 4px 0 #b06a3f, 0 6px 12px rgba(0,0,0,.2); pointer-events:auto;');
     b.append(E('span', 'font-size:30px; line-height:1; color:#9a3b2c;', { text: '↺' }), E('span', 'font-size:13px; font-weight:800; color:#9a3b2c;', { text: '重置' }));
-    b.onclick = () => { this.world.seed(this.world.stress ? 3 : 0); this.toast('🔄 农田已重置'); };
+    b.onclick = () => { this.world.resetAll(); this.toast('🔄 农田 / 市场 / AI 学习记录已全部重置'); };
     this.root.appendChild(b);
   }
 
@@ -343,19 +305,31 @@ export class GameHud {
   }
 
   // ============ 每帧刷新 ============
-  update(dtMS: number) {
+  update(_dtMS: number) {
     const w = this.world;
     const auto = w.mode === 'auto';
 
-    // 昼夜时钟 + 天气
+    // 昼夜时钟（live 模式即农场当地时间）
     const dn = dayState(w.tod);
     this.r.clock.textContent = dn.clock;
     this.r.phase.textContent = dn.phase;
     this.r.dayIcon.textContent = dn.icon;
-    const wm = WEATHER_META[w.weather.type] || WEATHER_META.clear;
-    this.r.wxIcon.textContent = wm.icon;
-    const temp = Math.round(12 + 16 * dn.light * 0 + 10 * (1 - dn.mul.a) + (w.weather.type === 'frost' ? -8 : w.weather.type === 'drought' ? 8 : 0));
-    this.r.wxCond.textContent = `${wm.label} ${temp}°`;
+    // 天气芯片：实时数据可用→实测天气+实测气温；否则游戏天气+合成气温
+    const rw = w.realWx;
+    if (w.live && rw && rw.ok) {
+      const wm = WEATHER_META[rw.type] || WEATHER_META.clear;
+      this.r.wxIcon.textContent = wm.icon;
+      this.r.wxCond.textContent = `${rw.label} ${Math.round(rw.temp)}°`;
+      this.r.wxPlace.textContent = '⇄ 南江·实时';
+      this.r.wxPlace.style.color = '#a9e6b1';
+    } else {
+      const wm = WEATHER_META[w.weather.type] || WEATHER_META.clear;
+      this.r.wxIcon.textContent = wm.icon;
+      const temp = Math.round(12 + 10 * (1 - dn.mul.a) + (w.weather.type === 'frost' ? -8 : w.weather.type === 'drought' ? 8 : 0));
+      this.r.wxCond.textContent = `${wm.label} ${temp}°`;
+      this.r.wxPlace.textContent = w.live ? '⇄ 南江·连接中' : '⇄ 南江·加速';
+      this.r.wxPlace.style.color = w.live ? '#d8c08a' : '#a9c6b1';
+    }
 
     // 健康条
     const hs = w.healthStats();
@@ -381,11 +355,12 @@ export class GameHud {
     this.r.aiPanel.style.top = panelTop;
     this.r.marketPanel.style.top = panelTop;
     if (disaster) {
+      const dm = WEATHER_META[w.weather.type] || WEATHER_META.clear;
       const wInt = w.weatherIntensity();
       const ph = wxPhase(w.weatherProg());
       this.r.wxPill.style.background = w.weather.type === 'rain' ? 'linear-gradient(#3f7fd0,#2a5da0)' : w.weather.type === 'drought' ? 'linear-gradient(#e08a2a,#c25f1f)' : 'linear-gradient(#5aa6c8,#3f7fa0)';
-      this.r.wxPillIcon.textContent = wm.icon;
-      this.r.wxPillLabel.textContent = wm.label;
+      this.r.wxPillIcon.textContent = dm.icon;
+      this.r.wxPillLabel.textContent = dm.label + (w.isLiveWeather() ? '·实时' : '');
       this.r.wxPillPhase.textContent = ph === 'onset' ? '初起·渐强' : ph === 'climax' ? '高潮·肆虐' : '尾声·减弱';
       const pct = Math.round(wInt * 100);
       (this.r.wxPillBar as HTMLElement).style.width = pct + '%';
@@ -403,45 +378,34 @@ export class GameHud {
       this.r.bubble.style.display = 'none';
     }
 
-    // 业务面板假数据（缓慢漂移，仅让画面"活"）
-    this.acc += dtMS;
-    if (this.acc >= 700) {
-      this.acc = 0;
-      this.driftBiz();
+    // world 推送的播报（行情暴涨暴跌 / 学习 / 破产 / 实时天气切换）→ toast
+    if (w.pendingToasts.length) {
+      for (const m of w.pendingToasts) if (m) this.toast(m);
+      w.pendingToasts.length = 0;
     }
     this.renderBiz(auto);
   }
 
-  private driftBiz() {
-    const b = this.biz;
-    for (const k of CROP_KEYS) {
-      b.marketPrev[k] = b.market[k];
-      b.market[k] = clamp(0.5, 2, b.market[k] + (Math.random() - 0.5) * 0.12);
-    }
-    b.funds = Math.max(0, b.funds + Math.round((Math.random() - 0.45) * 180));
-    if (Math.random() < 0.3) b.trades++;
-    if (Math.random() < 0.2) b.sells++;
-    if (Math.random() < 0.05) b.deaths++;
-    b.explore = clamp(0.05, 0.5, b.explore + (Math.random() - 0.5) * 0.02);
-    if (Math.random() < 0.08) b.last = LAST_MSGS[(Math.random() * LAST_MSGS.length) | 0];
-  }
-
+  // 面板数据：直接读取 world 的权威市场 / AI 学习状态（不再用假数据漂移）
   private renderBiz(auto: boolean) {
-    const b = this.biz;
+    const w = this.world;
+    const mk = w.market, mkPrev = w.marketPrev;
     if (auto) {
-      this.r.aiFunds.textContent = '🪙 ' + fmt(b.funds);
-      const net = b.funds - b.base;
+      const ai = w.ai;
+      this.r.aiFunds.textContent = '🪙 ' + fmt(ai.funds);
+      const net = ai.funds - AI_BASE;
       this.r.aiNet.textContent = (net >= 0 ? '+' : '−') + fmt(Math.abs(net));
       this.r.aiNet.style.color = net >= 0 ? '#bff05f' : '#ff9a8a';
-      this.r.aiTrades.textContent = String(b.trades);
-      this.r.aiSells.textContent = String(b.sells);
-      this.r.aiDeaths.textContent = String(b.deaths);
-      this.r.aiExplore.textContent = Math.round(b.explore * 100) + '%';
-      this.r.aiLast.textContent = '🧠 ' + b.last;
+      this.r.aiTrades.textContent = String(ai.trades);
+      this.r.aiSells.textContent = String(ai.sells);
+      this.r.aiDeaths.textContent = String(ai.deaths);
+      this.r.aiExplore.textContent = Math.round(ai.explore * 100) + '%';
+      this.r.aiLast.textContent = '🧠 ' + ai.last;
       for (const k of CROP_KEYS) {
-        const mult = b.market[k];
-        const score = clamp(2, 100, Math.round((mult / 2) * 100));
-        const up = mult >= b.marketPrev[k];
+        // 收益评分（学习中）= Q 值归一化（原型 (q+150)/528）；右侧为实时市价
+        const score = clamp(2, 100, Math.round(((ai.q[k] + 150) / 528) * 100));
+        const mult = mk[k];
+        const up = mult >= mkPrev[k];
         (this.r['aiCropBar_' + k] as HTMLElement).style.width = score + '%';
         this.r['aiCropScore_' + k].textContent = String(score);
         this.r['aiCropPrice_' + k].textContent = mult.toFixed(2) + '× ' + (up ? '▲' : '▼');
@@ -449,10 +413,10 @@ export class GameHud {
       }
     } else {
       for (const k of CROP_KEYS) {
-        const mult = b.market[k];
-        const up = mult >= b.marketPrev[k];
-        const price = Math.round(CROPS[k].sell * mult);
-        const pct = b.marketPrev[k] ? ((mult - b.marketPrev[k]) / b.marketPrev[k]) * 100 : 0;
+        const mult = mk[k];
+        const up = mult >= mkPrev[k];
+        const price = w.priceOf(k);
+        const pct = mkPrev[k] ? ((mult - mkPrev[k]) / mkPrev[k]) * 100 : 0;
         this.r['mkMult_' + k].textContent = mult.toFixed(2) + '×';
         (this.r['mkBar_' + k] as HTMLElement).style.width = Math.max(6, Math.min(100, Math.round((mult / 2) * 100))) + '%';
         this.r['mkPrice_' + k].textContent = '🪙' + price;
@@ -460,6 +424,14 @@ export class GameHud {
         this.r['mkTrend_' + k].style.color = up ? '#bff05f' : '#ff9a8a';
       }
     }
+  }
+
+  // 切换 实时 / 加速演示
+  private toggleLive() {
+    const w = this.world;
+    w.live = !w.live;
+    if (!w.live) w.todAuto = true; // 加速：恢复昼夜动画
+    this.toast(w.live ? '🛰 已切到实时：农场当地时间 + 实时天气' : '⏩ 已切到加速演示：合成昼夜与天气');
   }
 
   private setBar(pctEl: HTMLElement, barEl: HTMLElement, pct: number) {
@@ -486,11 +458,12 @@ export class GameHud {
     t.textContent = msg;
     this.toastBox.appendChild(t);
     requestAnimationFrame(() => (t.style.opacity = '1'));
-    if (this.toastT) clearTimeout(this.toastT);
-    this.toastT = setTimeout(() => {
+    // 限制同屏堆叠数量（市场/天气/学习播报较频繁）
+    while (this.toastBox.childElementCount > 3) this.toastBox.firstElementChild?.remove();
+    setTimeout(() => {
       t.style.opacity = '0';
       setTimeout(() => t.remove(), 250);
-    }, 2200);
+    }, 2600);
   }
 }
 
