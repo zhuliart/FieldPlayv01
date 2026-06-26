@@ -61,15 +61,26 @@ async function boot() {
   const atlas = new PlantAtlas();
   await atlas.build(app.renderer);
 
-  // 写实杂草贴图（用户提供 assets/weed_1..10.png）；单张加载失败则跳过，不影响主流程
-  const weedTex = (await Promise.all(
-    Array.from({ length: 10 }, (_, i) => Assets.load<Texture>(`assets/weed_${i + 1}.png`).catch(() => null)),
-  )).filter((t): t is Texture => !!t);
+  // 写实杂草贴图：只用「有完整生长过程」的三类（幼苗→生长→成熟）；其余单图类型待用户补全分阶段后再全量启用。
+  // 每类按阶段加载为 [幼苗, 生长, 成熟]；缺某张则用同类已加载贴图兜底，整类全失败则丢弃该类（不影响主流程）。
+  const WEED_STAGE_FILES: string[][] = [
+    ['weed_1_baby', 'weed_1_grow', 'weed_1'],
+    ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'],
+    ['weed_10_baby', 'weed_10_baby_grow', 'weed_10_mature'],
+  ];
+  const weedTypes = (await Promise.all(
+    WEED_STAGE_FILES.map(async (files) => {
+      const texs = await Promise.all(files.map((f) => Assets.load<Texture>(`assets/${f}.png`).catch(() => null)));
+      const present = texs.filter((t): t is Texture => !!t);
+      if (present.length === 0) return null;
+      return texs.map((t) => t ?? present[present.length - 1]) as Texture[];
+    }),
+  )).filter((t): t is Texture[] => !!t);
 
   // —— 场景图层 ——
   const background = new Background();
   const weatherOverlay = new WeatherOverlay();
-  const field = new Field(atlas, weedTex, (plotId) => {
+  const field = new Field(atlas, weedTypes, (plotId) => {
     if (world.mode === 'manual') world.manualAction(plotId);
     else world.burst(plotId, 'water');
   });

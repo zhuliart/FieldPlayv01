@@ -31,12 +31,12 @@ export class Field {
   private cropLayer = new Container();
   private hitLayer = new Container();
   private recs: SpriteRec[] = [];
-  private weedTex: Texture[] = [];
-  private weedRecs: { sprite: Sprite; plotId: number; order: number; baseScale: number }[] = [];
+  private weedTypes: Texture[][] = []; // 每类杂草一组三阶段贴图 [幼苗, 生长, 成熟]
+  private weedRecs: { sprite: Sprite; plotId: number; order: number; stages: Texture[]; targetH: number; cur: number }[] = [];
   private actor: Container | null = null; // 机器人机身（放进作物层做深度排序；重建时需保留）
 
-  constructor(private atlas: PlantAtlas, weedTex: Texture[], private onPlotTap: (plotId: number) => void) {
-    this.weedTex = weedTex;
+  constructor(private atlas: PlantAtlas, weedTypes: Texture[][], private onPlotTap: (plotId: number) => void) {
+    this.weedTypes = weedTypes;
     this.cropLayer.sortableChildren = true; // 作物 + 杂草 + 机器人机身 共用此层，按 y 纵深统一排序
     this.view.addChild(this.cropLayer);
     this.view.addChild(this.hitLayer);
@@ -99,12 +99,12 @@ export class Field {
           colorVar: makeColorVar(p.id, idx),
         });
       });
-      // 杂草：每地块预置 ~12 株（随机位置/类型，写实贴图），随 weedProg 逐株出现并长大（蔓延）
-      for (let k = 0; this.weedTex.length > 0 && k < 12; k++) {
+      // 杂草：每地块预置 ~12 株（随机位置/类型，写实三阶段贴图），随 weedProg 逐株出现、换阶段(幼→中→熟)并长大（蔓延）
+      for (let k = 0; this.weedTypes.length > 0 && k < 12; k++) {
         const wpt = quadPoint(q, 0.1 + plantHash(p.id, k, 21) * 0.8, 0.12 + plantHash(p.id, k, 22) * 0.76);
-        const type = Math.min(this.weedTex.length - 1, Math.floor(plantHash(p.id, k, 23) * this.weedTex.length));
-        const tex = this.weedTex[type];
-        const s = new Sprite(tex);
+        const type = Math.min(this.weedTypes.length - 1, Math.floor(plantHash(p.id, k, 23) * this.weedTypes.length));
+        const stages = this.weedTypes[type]; // [幼苗, 生长, 成熟]
+        const s = new Sprite(stages[0]);
         s.anchor.set(0.5, 0.96);
         s.position.set(pctX(wpt.x), pctY(wpt.y));
         s.zIndex = wpt.y; // 与作物/机身同层按 y 排序 → 身前的杂草遮挡机器人底部，身后的在其后
@@ -112,8 +112,8 @@ export class Field {
         this.cropLayer.addChild(s);
         const depthScale = 0.6 + (wpt.y / 100) * 0.7; // 近大远小
         const sizeJit = 0.8 + plantHash(p.id, k, 24) * 0.5;
-        const targetH = 32 * depthScale * sizeJit; // 杂草目标高度(px)：大幅缩小为小而朴素的地面杂草（约 15~54px）
-        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, baseScale: targetH / (tex.height || 1) });
+        const targetH = 34 * depthScale * sizeJit; // 成熟期目标高度(px)：小而朴素的地面杂草
+        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, stages, targetH, cur: -1 });
       }
     }
   }
@@ -199,10 +199,12 @@ export class Field {
       const tint = multiplyColor(multiplyColor(relight, stress), rec.colorVar);
       a.tint = tint; b.tint = tint;
       a.alpha = 1;
-      b.alpha = stage >= 4 ? 0 : frac; // 成熟阶段已无上层
+      // 上层(下一阶段)仅在每阶段最后 30% 才淡入 → 其余 70% 完全只显当前阶段(不透明)，
+      // 消除"整株半透明"观感（此前 alpha=frac 让上层贴图常年半透叠在下层上，露出背景而发虚）。
+      b.alpha = stage >= 4 ? 0 : Math.max(0, (frac - 0.7) / 0.3);
     }
 
-    // —— 杂草：按地块 weedProg 逐株出现(蔓延)并长大；跟随昼夜明暗 ——
+    // —— 杂草：按地块 weedProg 逐株出现(蔓延)，按生长进度换阶段贴图(幼→中→熟)并连续长高；跟随昼夜明暗 ——
     for (const wr of this.weedRecs) {
       const plot = world.plots[wr.plotId];
       if (!plot) { wr.sprite.visible = false; continue; }
@@ -210,8 +212,12 @@ export class Field {
       const appearAt = wr.order * 7 + 6; // 越靠后的草越晚冒出 → 视觉上"蔓延"
       if (wp <= appearAt) { wr.sprite.visible = false; continue; }
       wr.sprite.visible = true;
-      const grow = Math.min(1, (wp - appearAt) / 24);
-      wr.sprite.scale.set(wr.baseScale * (0.45 + 0.55 * grow));
+      const grow = Math.min(1, (wp - appearAt) / 30); // 0..1 该株生长进度
+      const wstage = grow < 0.34 ? 0 : grow < 0.7 ? 1 : 2; // 幼苗 / 生长 / 成熟
+      if (wr.cur !== wstage) { wr.sprite.texture = wr.stages[wstage]; wr.cur = wstage; }
+      // 屏上高度连续(0.42→1.0×targetH)，除以当前阶段贴图实高 → 换阶段不跳高，只换形态细节
+      const h = wr.targetH * (0.42 + 0.58 * grow);
+      wr.sprite.scale.set(h / (wr.stages[wstage].height || 1));
       wr.sprite.tint = relight;
     }
   }

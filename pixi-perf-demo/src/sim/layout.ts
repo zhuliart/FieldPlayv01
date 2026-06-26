@@ -1,5 +1,5 @@
 import { BASE_CORNERS, type Quad, STAGE_W, STAGE_H } from '../data/baseCorners';
-import { CANOPY_W, DENSITY, LAYOUT_MARGIN, LAYOUT_JITTER, type CropKey } from '../data/crops';
+import { CANOPY_W, DENSITY, DENSITY_CAP, LAYOUT_MARGIN, LAYOUT_JITTER, type CropKey } from '../data/crops';
 
 // 田间几何 / 自动布点 —— 移植自原型 autoPoints()，按地块透视在四边形内铺植株点。
 
@@ -43,7 +43,7 @@ export function autoPoints(plotId: number, crop: CropKey, q: Quad, capBoost = 0)
   const widthPx = Math.hypot(((RIGHT[0] - LEFT[0]) / 100) * CW, ((RIGHT[1] - LEFT[1]) / 100) * CH);
   const depthPx = Math.hypot(((BOT[0] - TOP[0]) / 100) * CW, ((BOT[1] - TOP[1]) / 100) * CH);
   const canopyW = (pdep / 100) * CH * (CANOPY_W[crop] || 0.16);
-  const cap = DENSITY.cap + capBoost;
+  const cap = (DENSITY_CAP[crop] ?? DENSITY.cap) + capBoost;
   const cols = Math.max(3, Math.min(cap, Math.round(widthPx / (DENSITY.sf * canopyW))));
   const rows = Math.max(3, Math.min(cap, Math.round(depthPx / (DENSITY.sf * 0.85 * canopyW))));
   const jit = LAYOUT_JITTER;

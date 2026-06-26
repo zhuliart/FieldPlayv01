@@ -47,7 +47,7 @@ export const CROP_KEYS: CropKey[] = ['tomato', 'lettuce', 'corn', 'chili', 'whea
 // 田间植株渲染参数（移植自原型）：
 // 株高占地块纵深的系数（高秆玉米最大、番茄次之，其余默认 0.42）
 // 株高占地块纵深的系数：玉米最高最大，番茄次之，辣椒再次，生菜最小（用户调校）
-export const PLANT_SIZE: Record<string, number> = { corn: 1.804, tomato: 0.99, chili: 0.588, wheat: 0.74 };
+export const PLANT_SIZE: Record<string, number> = { corn: 1.804, tomato: 0.99, chili: 0.588, wheat: 1.12 };
 export const PLANT_SIZE_DEFAULT = 0.42; // 生菜（保持原尺寸）
 
 // 各作物成熟所需「墙钟秒数」(rate=1、常规档)：按真实生长周期相对差异定，整体约为旧版(~30s)的 5× →
@@ -63,10 +63,12 @@ export const CROP_BOTTOM: Record<CropKey, number[]> = {
   wheat: [0.96, 0.96, 0.96, 0.96, 0.96], // 已 trim 紧贴 bbox，根在底部
 };
 
-// 冠幅系数（用于自动布点的行列密度）
-export const CANOPY_W: Record<string, number> = { corn: 0.135, tomato: 0.15, chili: 0.135, lettuce: 0.18, wheat: 0.12 };
+// 冠幅系数（用于自动布点的行列密度）——冠幅越小→行列越密。小麦条播密植，冠幅最小。
+export const CANOPY_W: Record<string, number> = { corn: 0.135, tomato: 0.15, chili: 0.135, lettuce: 0.18, wheat: 0.07 };
 
 // 自动布点密度配置（原型 densityCfg / layoutMargin / layoutJitter）
 export const DENSITY = { sf: 2.55, cap: 5 };
+// 行列上限按作物覆盖（默认 DENSITY.cap=5）。小麦密植，单独抬高上限以铺满成密集麦田。
+export const DENSITY_CAP: Record<string, number> = { wheat: 8 };
 export const LAYOUT_MARGIN = 0.15;
 export const LAYOUT_JITTER = 0.03;
