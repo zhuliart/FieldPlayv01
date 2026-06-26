@@ -1,0 +1,20 @@
+{
+  "name": "fieldplay-pixi-perf-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "FieldPlay 田游智耕 · PixiJS(WebGL) 性能验证 DEMO — 1:1 复刻 DOM 原型画面/动效，内建 FPS 表/效果开关/压力模式",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host"
+  },
+  "dependencies": {
+    "pixi.js": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

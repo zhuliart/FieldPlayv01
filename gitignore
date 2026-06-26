@@ -1,0 +1,93 @@
+# ===== FieldPlay 田游智耕 · .gitignore =====
+# 适用：Vite + TypeScript + PixiJS/React 前端 + Node 后端
+# 配套 CLAUDE.md「不提交密钥 / 构建产物 / 依赖」的约定
+
+# ---- 依赖 / Dependencies ----
+node_modules/
+.pnp
+.pnp.js
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+!.yarn/versions
+
+# ---- 构建产物 / Build output ----
+dist/
+build/
+out/
+.vite/
+.output/
+.turbo/
+*.tsbuildinfo
+
+# ---- 环境变量 / 密钥（重点：绝不入库）----
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+secrets.*
+**/serviceAccount*.json
+
+# ---- 日志 / Logs ----
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ---- 缓存 / Cache ----
+.cache/
+.eslintcache
+.stylelintcache
+.parcel-cache/
+.npm/
+
+# ---- 测试 / 覆盖率 ----
+coverage/
+*.lcov
+.nyc_output/
+
+# ---- 编辑器 / IDE ----
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- 操作系统 ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ---- 临时 / 杂项 ----
+tmp/
+temp/
+*.tmp
+
+# ---- 美术资源说明 ----
+# 源美术（assets/ 下的 png/jpg）属于设计资产，应当入库，勿忽略。
+# 如有“构建时自动生成”的图集/打包产物（非源文件），按需在此忽略，例如：
+# assets/atlases/generated/
+# public/spritesheets/*.generated.*
+
+# ---- 可选：若改用 Cocos Creator，取消下方注释 ----
+# library/
+# temp/
+# local/
+# build/
+# profiles/
+# native/
+# *.creator-temp
