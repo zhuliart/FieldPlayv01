@@ -42,6 +42,10 @@ export interface WeedKind {
 // 水源位置（左下角，% 坐标，与 BASE_CORNERS 同系）—— 喜水野草(weed_8)在此成片密生。要挪改这一处即可。
 const WATER_SRC = { x: 9, y: 89 };
 
+// 各天气下「定向光强度」(0..1)：晴（含晴夜有月）→ 强投影；阴雨漫射 → 弱投影。
+// 接地阴影强度据此对齐背景植物投影（晴夜背景投影也强，故夜里阴影不随亮度变弱）。
+const SHADOW_CLEARNESS: Record<string, number> = { clear: 1, drought: 0.95, frost: 0.58, cloudy: 0.28, lightrain: 0.22, rain: 0.12 };
+
 // 地块层：12 个可点多边形（点击=浇水）+ 全田作物精灵（共享图集 → 合批）。
 // 含逐项移植的「倒伏（lodging）随机机制」与「应激滤镜（旱黄/冻蓝/涝暗/枯褐/过熟褪色）」。
 export class Field {
@@ -239,7 +243,8 @@ export class Field {
       ? sceneLum(world.tod, wx, world.weatherIntensity())
       : 1;
     const relight = ambientTint(lum); // 环境色罩染：白天近中性、夜里转冷蓝 → 与场景融为一体
-    const shadowAlpha = 0.16 + 0.34 * lum;        // 接地软阴影：白天清晰、夜里淡（随光照强度）
+    // 接地阴影强度对齐背景：随天气「定向光强度」(晴/晴夜强、阴雨弱)，夜里仅轻微减弱（晴夜有月投影仍强）
+    const shadowAlpha = (0.15 + 0.45 * (SHADOW_CLEARNESS[wx] ?? 0.5)) * (0.85 + 0.15 * lum);
     const SHTEX = this.shadowTex.width || 64;
 
     for (const rec of this.recs) {
