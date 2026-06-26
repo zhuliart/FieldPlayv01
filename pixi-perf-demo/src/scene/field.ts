@@ -28,7 +28,6 @@ interface SpriteRec {
 // 含逐项移植的「倒伏（lodging）随机机制」与「应激滤镜（旱黄/冻蓝/涝暗/枯褐/过熟褪色）」。
 export class Field {
   readonly view = new Container();
-  private weedLayer = new Container();
   private cropLayer = new Container();
   private hitLayer = new Container();
   private recs: SpriteRec[] = [];
@@ -38,9 +37,7 @@ export class Field {
 
   constructor(private atlas: PlantAtlas, weedTex: Texture[], private onPlotTap: (plotId: number) => void) {
     this.weedTex = weedTex;
-    this.weedLayer.sortableChildren = true;
-    this.cropLayer.sortableChildren = true;
-    this.view.addChild(this.weedLayer); // 杂草在作物之下（地面层）
+    this.cropLayer.sortableChildren = true; // 作物 + 杂草 + 机器人机身 共用此层，按 y 纵深统一排序
     this.view.addChild(this.cropLayer);
     this.view.addChild(this.hitLayer);
   }
@@ -68,7 +65,6 @@ export class Field {
 
   rebuild(world: World) {
     this.cropLayer.removeChildren();
-    this.weedLayer.removeChildren();
     if (this.actor) this.cropLayer.addChild(this.actor); // 重建作物时保留机身，否则被 removeChildren 清掉→机器人消失
     this.recs = [];
     this.weedRecs = [];
@@ -111,9 +107,9 @@ export class Field {
         const s = new Sprite(tex);
         s.anchor.set(0.5, 0.96);
         s.position.set(pctX(wpt.x), pctY(wpt.y));
-        s.zIndex = wpt.y;
+        s.zIndex = wpt.y; // 与作物/机身同层按 y 排序 → 身前的杂草遮挡机器人底部，身后的在其后
         s.visible = false;
-        this.weedLayer.addChild(s);
+        this.cropLayer.addChild(s);
         const depthScale = 0.6 + (wpt.y / 100) * 0.7; // 近大远小
         const sizeJit = 0.8 + plantHash(p.id, k, 24) * 0.5;
         const targetH = 32 * depthScale * sizeJit; // 杂草目标高度(px)：大幅缩小为小而朴素的地面杂草（约 15~54px）
