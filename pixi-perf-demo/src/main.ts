@@ -3,6 +3,7 @@ import { STAGE_W, STAGE_H } from './data/baseCorners';
 import { installFitBoard } from './core/stage';
 import { StatsMeter } from './core/stats';
 import { PlantAtlas } from './core/assets';
+import { av } from './core/assetVer';
 import { World } from './sim/world';
 import { Background } from './scene/background';
 import { Field } from './scene/field';
@@ -71,7 +72,7 @@ async function boot() {
   ];
   const weedTypes = (await Promise.all(
     WEED_STAGE_FILES.map(async (files) => {
-      const texs = await Promise.all(files.map((f) => Assets.load<Texture>(`assets/${f}.png`).catch(() => null)));
+      const texs = await Promise.all(files.map((f) => Assets.load<Texture>(av(`assets/${f}.png`)).catch(() => null)));
       const present = texs.filter((t): t is Texture => !!t);
       if (present.length === 0) return null;
       return texs.map((t) => t ?? present[present.length - 1]) as Texture[];

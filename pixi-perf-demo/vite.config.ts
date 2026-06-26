@@ -51,6 +51,10 @@ function sharedAssets(): Plugin {
 export default defineConfig({
   base: './',
   plugins: [sharedAssets()],
+  // 资源版本号：构建时间戳注入到代码常量，供 av() 给图片 URL 加 ?v= 做缓存失效（见 core/assetVer.ts）
+  define: {
+    __ASSET_VER__: JSON.stringify(String(Date.now())),
+  },
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 1500,

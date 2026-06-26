@@ -1,5 +1,6 @@
 import { Assets, RenderTexture, Rectangle, Sprite, Container, Texture, type Renderer } from 'pixi.js';
 import { CROP_KEYS } from '../data/crops';
+import { av } from './assetVer';
 
 // ============================================================================
 // 作物图集（spritesheet 合批）—— 把 20 张 plant_*.png 在运行时打进一张 atlas，
@@ -19,7 +20,7 @@ export class PlantAtlas {
 
   async build(renderer: Renderer): Promise<void> {
     const names = this.names();
-    const urls = names.map((n) => `assets/${n}.png`);
+    const urls = names.map((n) => av(`assets/${n}.png`));
     let textures: Texture[];
     try {
       textures = await Promise.all(urls.map((u) => Assets.load<Texture>(u)));

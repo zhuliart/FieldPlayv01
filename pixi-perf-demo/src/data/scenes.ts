@@ -1,4 +1,5 @@
 // 昼夜 / 天气 / 背景调度算法 —— 全部从原型 FieldPlay.dc.html 原样移植，保证观感与节奏一致。
+import { av } from '../core/assetVer';
 
 export type WeatherType = 'clear' | 'cloudy' | 'lightrain' | 'rain' | 'drought' | 'frost';
 export type TimeNode = 'dawn' | 'morning' | 'noon' | 'afternoon' | 'evening' | 'night';
@@ -138,7 +139,7 @@ export function bgLayers(tod: number, wxType: WeatherType, wInt: number): BgCand
   const { Ak, Bk, ft } = bgBracket(tod);
   const SET = wxSet(wxType);
   const wi = SET === 'normal' ? 0 : Math.max(0, Math.min(1, wInt || 0));
-  const url = (set: string, k: string) => `assets/bg/bg_${set}_${k}.jpg`;
+  const url = (set: string, k: string) => av(`assets/bg/bg_${set}_${k}.jpg`);
   let cand = [
     { key: 'NA', set: 'normal', node: Ak, weight: (1 - wi) * (1 - ft) },
     { key: 'NB', set: 'normal', node: Bk, weight: (1 - wi) * ft },
