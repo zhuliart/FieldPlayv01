@@ -68,8 +68,8 @@ export const CANOPY_W: Record<string, number> = { corn: 0.135, tomato: 0.15, chi
 
 // 自动布点密度配置（原型 densityCfg / layoutMargin / layoutJitter）
 export const DENSITY = { sf: 2.55, cap: 5 };
-// 行列上限按作物覆盖（默认 DENSITY.cap=5）。小麦密植：上限抬到 12 → 株距(~20px)<株宽(~29px) 横向重叠约30%，
-// 麦秆互填缝隙、不再透出背景（消"半透/发蓝"）。约 12×12≈144 株/块（原 8×8=64 翻倍多）。
-export const DENSITY_CAP: Record<string, number> = { wheat: 12 };
+// 行列上限按作物覆盖（默认 DENSITY.cap=5）。小麦是条播「密密麻麻一片」而非番茄/玉米的行距点播 →
+// 单独把上限抬到 16（约 16×16≈256 株/块，远密于通用 cap），成密集苗毯/麦田。
+export const DENSITY_CAP: Record<string, number> = { wheat: 16 };
 export const LAYOUT_MARGIN = 0.15;
 export const LAYOUT_JITTER = 0.03;

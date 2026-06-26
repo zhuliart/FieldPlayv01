@@ -2,6 +2,7 @@ import { Container, Sprite, Texture } from 'pixi.js';
 import { STAGE_W, STAGE_H } from '../data/baseCorners';
 import { bgBracket, type WeatherType } from '../data/scenes';
 import { OnDemandTextureCache } from '../core/assets';
+import { av } from '../core/assetVer';
 import type { World } from '../sim/world';
 
 // 杂草 / 极端天气状态叠加层（全屏状态图，按需解码）：
@@ -48,7 +49,7 @@ export class WeatherOverlay {
     const node = ft < 0.5 ? Ak : Bk;
     const weedTarget = 0; // 整屏杂草叠层停用 → 改用 field.ts 逐地块程序化杂草精灵
     if (weedTarget > 0) {
-      const tex = this.cache.request(`assets/wd/weed_${node}.jpg`);
+      const tex = this.cache.request(av(`assets/wd/weed_${node}.jpg`));
       if (tex) this.weed.texture = tex;
     }
     this.weedAlpha += (weedTarget - this.weedAlpha) * rate;
@@ -61,7 +62,7 @@ export class WeatherOverlay {
     let stateTarget = 0;
     if (set && wInt > 0.05) {
       const frame = Math.max(1, Math.min(12, Math.round(wInt * 11) + 1));
-      const tex = this.cache.request(`assets/state/${set}${frame}.png`);
+      const tex = this.cache.request(av(`assets/state/${set}${frame}.png`));
       if (tex) this.state.texture = tex;
       stateTarget = Math.min(0.85, wInt * 0.9);
     }
