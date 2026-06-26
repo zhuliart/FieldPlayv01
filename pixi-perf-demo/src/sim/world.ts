@@ -70,6 +70,16 @@ export interface EconState {
   seedStock: number; // 种子库存（播种消耗，去商店按批采购）
 }
 
+// 玩家手动模式资源（与机器人 res/ai.funds 严格分离）：金币 / 体力(随时间恢复) / 水 / 生态肥。
+// 每个手动动作消耗其中之一，不足即拦截 → 杜绝"无限重复"。对齐 H5 state.coins/energy/water/eco（H5 体力不回血，本版加缓慢恢复让手动可持续）。
+export interface PlayerRes {
+  coins: number;
+  energy: number;
+  energyMax: number;
+  water: number;
+  eco: number;
+}
+
 export interface RealWx {
   ok: boolean;
   type: WeatherType;
@@ -104,7 +114,7 @@ export interface Burst {
 }
 
 // 手动模式工具类型（点地块执行）
-export type ManualTool = 'water' | 'fert' | 'harvest' | 'weed' | 'clear' | 'till' | 'cover' | 'drain';
+export type ManualTool = 'plant' | 'water' | 'fert' | 'harvest' | 'weed' | 'clear' | 'till' | 'cover' | 'drain';
 
 // 田间道路网络（巡田路径）：节点 + 连线，机器人沿道路寻路
 export interface RoadNet {
@@ -196,6 +206,10 @@ export class World {
 
   // —— 收成库存 / 仓储经济（收获入此，机器人择机出售/入库）——
   econ: EconState = freshEcon();
+
+  // —— 玩家手动模式资源（金币/体力/水/生态肥）——
+  player: PlayerRes = freshPlayer();
+  manualSeed: CropKey = 'tomato'; // 手动「种植」工具当前选的作物
 
   // 待消费的播报（HUD 取走后清空）
   pendingToasts: string[] = [];
@@ -362,6 +376,7 @@ export class World {
     this.marketEvent = null;
     this.ai = freshAI();
     this.econ = freshEcon();
+    this.player = freshPlayer();
   }
 
   // （旧的固定蛇形巡逻 buildPatrol/startSeg 已移除，改为下方需求驱动状态机 stepRobot）
@@ -375,6 +390,11 @@ export class World {
 
   update(dtMS: number) {
     this.pendingBursts.length = 0;
+
+    // 玩家体力随时间缓慢恢复（手动模式劳动门槛 → 不能无限作业；约 80s 回满）
+    if (this.player.energy < this.player.energyMax) {
+      this.player.energy = Math.min(this.player.energyMax, this.player.energy + 0.0015 * dtMS);
+    }
 
     // —— 实时天气轮询（10 分钟）——
     if (this.live) {
@@ -418,11 +438,7 @@ export class World {
       // 恶性草抢营养：侵染 >30 起急剧拖慢，重度几乎让作物长不动（rule3「无法正常生长」）
       const malignFactor = p.malign > 30 ? Math.max(0.08, 1 - ((p.malign - 30) / 100) * 1.4) : 1;
       for (const sl of p.slots) {
-        if (sl.dead) {
-          // 托管：枯死残株保留，待机器人「清枯」转空地（不自动重生，撂荒→闲置税生效）；手动：短暂展示后自动重生
-          if (this.mode !== 'auto') { sl.respawnT -= dtMS; if (sl.respawnT <= 0) this.respawn(sl); }
-          continue;
-        }
+        if (sl.dead) continue; // 枯死残株保留：待清枯转空地→翻耕→播种（手动玩家/托管机器人都走轮作，不自动重生）
         if (sl.phase !== 'grow') continue; // 空置/已翻耕地块不生长（待播种）
         // 收获后翻耕/休耕期：先显示裸土翻耕，暂不生长（让"耕地→育苗"过程看得见，而非收完瞬间满田新苗）
         if (sl.fallowMS > 0) { sl.fallowMS -= dtMS; continue; }
@@ -642,11 +658,7 @@ export class World {
   private fertPlot(id: number) { const p = this.plots[id]; if (!p) return; for (const sl of p.slots) if (!sl.dead && sl.growth < 400) sl.growth = Math.min(400, sl.growth + 18); this.ai.last = '🌿 精准施肥，加速生长'; }
   private clearPlot(id: number) {
     const p = this.plots[id]; if (!p) return; let n = 0;
-    for (const sl of p.slots) if (sl.dead) {
-      if (this.mode === 'auto') { sl.dead = false; sl.deathKind = ''; sl.phase = 'empty'; } // 清枯→空地，待翻耕
-      else this.respawn(sl);
-      n++;
-    }
+    for (const sl of p.slots) if (sl.dead) { sl.dead = false; sl.deathKind = ''; sl.phase = 'empty'; n++; } // 清枯→空地，待翻耕（手动/托管同）
     if (n > 0) this.ai.last = `🥀 清除 ${n} 株枯株（空出待翻耕）`;
   }
   private weedPlot(id: number) {
@@ -657,9 +669,9 @@ export class World {
   }
   private tillPlot(id: number) {
     const p = this.plots[id]; if (!p) return;
-    if (this.mode === 'auto') { for (const sl of p.slots) if (sl.phase === 'empty') sl.phase = 'tilled'; this.ai.last = '🚜 翻耕整地，准备播种'; }
-    else { for (const sl of p.slots) if (sl.dead) this.respawn(sl); }
+    for (const sl of p.slots) if (sl.phase === 'empty') sl.phase = 'tilled'; // 空地→已翻耕（手动/托管同）
     p.weeds = 0; p.weedProg = 0; // 翻耕同时清除杂草
+    this.ai.last = '🚜 翻耕整地，准备播种';
   }
   // 修路：清除道路杂草/破损，扣 320🪙（对齐 H5 robotRepair）
   private repairPlot(id: number) {
@@ -1126,10 +1138,6 @@ export class World {
     }
   }
 
-  private respawn(sl: Slot) {
-    sl.dead = false; sl.deathKind = ''; sl.growth = 0; sl.fallowMS = 0; sl.phase = 'grow';
-    sl.moist = 5; sl.dry = 0; sl.flood = 0; sl.frost = 0; sl.parch = 0; sl.age = 0;
-  }
 
   // 浇水：复位该地块所有活株的缺水/湿度（机器人巡田到点 + 手动点地块）
   applyWater(plotId: number) {
@@ -1256,30 +1264,118 @@ export class World {
     return this.rPhase === 'charge';
   }
 
-  // 手动模式：按当前选中工具对地块执行操作（点地块触发）
+  // 手动模式：按当前选中工具对地块执行（点地块触发）。每个动作消耗玩家资源(体力/水/生态肥/金币)，
+  // 不足即拦截并播报 —— 杜绝"无限重复"；劳动类(除草/清枯/耕地)受体力约束，体力随时间恢复。
   manualAction(plotId: number) {
     const p = this.plots[plotId];
     if (!p) return;
+    const pl = this.player;
+    // g=true: 有"在长且未熟"的作物；g=false: 有任意在长作物(含成熟)
+    const grow = (g = true) => p.slots.some((sl) => sl.phase === 'grow' && !sl.dead && (!g || sl.growth < 400));
     switch (this.manualTool) {
-      case 'water': this.applyWater(plotId); this.pendingBursts.push({ plotId, kind: 'water' }); break;
-      case 'fert': this.fertPlot(plotId); this.pendingBursts.push({ plotId, kind: 'fert' }); break;
-      case 'harvest': this.manualHarvest(plotId); this.pendingBursts.push({ plotId, kind: 'fert' }); break;
-      case 'weed': this.weedPlot(plotId); this.pendingBursts.push({ plotId, kind: 'fert' }); break;
-      case 'clear': this.clearPlot(plotId); break;
-      case 'till': this.tillPlot(plotId); this.pendingBursts.push({ plotId, kind: 'fert' }); break;
-      case 'cover': this.coverPlot(plotId); this.pendingBursts.push({ plotId, kind: 'fert' }); break;
-      case 'drain': this.drainPlot(plotId); this.pendingBursts.push({ plotId, kind: 'water' }); break;
+      case 'plant':
+        if (grow(false)) return this.pushToast('🌱 地里还有作物，先收获/清理再播种');
+        this.plantManual(plotId);
+        break;
+      case 'water':
+        if (!grow(true)) return this.pushToast('🌱 空地无需浇水');
+        if (pl.water < 10) return this.pushToast('💧 水量不足（点资源条 + 补给）');
+        pl.water -= 10; this.applyWater(plotId); this.pendingBursts.push({ plotId, kind: 'water' });
+        break;
+      case 'fert':
+        if (!grow(true)) return this.pushToast('🌱 空地/已成熟，无需施肥');
+        if (pl.eco < 15) return this.pushToast('🌿 生态肥不足（点资源条 + 补给）');
+        if (pl.energy < 6) return this.pushToast('⚡ 体力不足，稍候恢复');
+        pl.eco -= 15; pl.energy -= 6; this.fertManual(plotId); this.pendingBursts.push({ plotId, kind: 'fert' });
+        break;
+      case 'harvest':
+        if (this.manualHarvest(plotId) <= 0) return this.pushToast('🌾 尚无成熟作物');
+        this.pendingBursts.push({ plotId, kind: 'fert' });
+        break;
+      case 'weed':
+        if (p.weedProg < 10 && p.malign < 20) return this.pushToast('🌿 这块地没有杂草');
+        if (pl.energy < 20) return this.pushToast('⚡ 体力不足，除草较累，稍候');
+        pl.energy -= 20; this.weedPlot(plotId); this.pendingBursts.push({ plotId, kind: 'fert' });
+        break;
+      case 'clear':
+        if (!p.slots.some((sl) => sl.dead)) return this.pushToast('🥀 这块地没有枯死的植株');
+        if (pl.energy < 8) return this.pushToast('⚡ 体力不足，无法清枯');
+        pl.energy -= 8; this.clearPlot(plotId);
+        break;
+      case 'till':
+        if (grow(false)) return this.pushToast('🚜 有作物正在生长，无法耕地');
+        if (!this.plotHasEmpty(p)) return this.pushToast('🚜 无需耕地（先收获/清枯空出地块）');
+        if (pl.energy < 12) return this.pushToast('⚡ 体力不足，无法耕地');
+        pl.energy -= 12; this.tillPlot(plotId); this.pendingBursts.push({ plotId, kind: 'fert' });
+        break;
+      case 'cover':
+        if (!grow(true)) return this.pushToast('🧣 空地无需保温');
+        if (pl.eco < 8) return this.pushToast('🧣 保温材料不足');
+        pl.eco -= 8; this.coverPlot(plotId); this.pendingBursts.push({ plotId, kind: 'fert' });
+        break;
+      case 'drain':
+        if (!grow(true)) return this.pushToast('🌊 空地无需排水');
+        if (pl.eco < 6) return this.pushToast('🌊 排水材料不足');
+        pl.eco -= 6; this.drainPlot(plotId); this.pendingBursts.push({ plotId, kind: 'water' });
+        break;
     }
   }
-  // 手动收获：成熟株复位（手动模式不走 AI 经济）
+
+  // 手动施肥：一次性小幅催长(约 1/5 个阶段，非整阶段秒拔)；配合体力+生态肥门槛 → 点几下不会就成熟
+  private fertManual(plotId: number) {
+    const p = this.plots[plotId]; if (!p) return;
+    for (const sl of p.slots) if (sl.phase === 'grow' && !sl.dead && sl.growth < 400) sl.growth = Math.min(400, sl.growth + 20);
+  }
+
+  // 手动收获：成熟株卖出得金币 + 回补少量生态肥；地块空出(待翻耕→播种)，给手动玩家完整轮作
   private manualHarvest(plotId: number): number {
-    const p = this.plots[plotId];
-    if (!p) return 0;
+    const p = this.plots[plotId]; if (!p) return 0;
+    const crop = p.slots.find((sl) => sl.phase === 'grow' && !sl.dead && sl.growth >= 400)?.crop;
     let n = 0;
-    for (const sl of p.slots) {
-      if (!sl.dead && sl.growth >= 400) { n++; sl.growth = 0; sl.fallowMS = this.stress ? 2500 : 5000; sl.moist = 6; sl.dry = 0; sl.flood = 0; sl.frost = 0; sl.parch = 0; sl.age = 0; }
+    for (const sl of p.slots) if (sl.phase === 'grow' && !sl.dead && sl.growth >= 400) { n++; sl.phase = 'empty'; }
+    if (n > 0 && crop) {
+      const units = Math.min(9, n);
+      const gain = Math.round(units * this.priceOf(crop));
+      this.player.coins += gain;
+      this.player.eco = Math.min(400, this.player.eco + units * 2); // 收获回补少量生态肥（对齐 H5 +eco）
+      this.pushToast(`🧺 收获「${CROPS[crop].name}」×${units} 卖得 +${gain}🪙`);
     }
     return n;
+  }
+
+  // 手动播种：空地/已翻耕地块种下当前选种(manualSeed)，扣金币(种子成本)，按作物密度布点(autoPoints)
+  plantManual(plotId: number) {
+    const p = this.plots[plotId]; if (!p) return;
+    if (p.slots.some((sl) => sl.phase === 'grow' && !sl.dead)) return this.pushToast('🌱 地里还有作物');
+    const crop = this.manualSeed;
+    const cost = CROPS[crop].seed;
+    if (this.player.coins < cost) return this.pushToast(`🪙 金币不足（播种「${CROPS[crop].name}」需 ${cost}🪙）`);
+    this.player.coins -= cost;
+    const q = getQuad(plotId);
+    const pts = autoPoints(plotId, crop, q, this.stress ? 3 : 0);
+    p.slots = pts.map((pt) => {
+      const gh = (((Math.round(pt.x * 7.3 + pt.y * 13.1) % 100) + 100) % 100) / 100;
+      const rate = 0.6 + gh * 0.8;
+      return {
+        pt, crop, growth: 0, rate,
+        moist: 8, dry: 0, flood: 0, frost: 0, parch: 0, age: 0,
+        dead: false, deathKind: '' as const, respawnT: 0,
+        fallowMS: this.stress ? 1200 : 2200, phase: 'grow' as const,
+      };
+    });
+    p.weeds = 0; p.weedProg = 0; // 播种即整地清杂草
+    this.dirtyPlots.push(plotId);
+    this.pushToast(`🌱 播种「${CROPS[crop].name}」(-${cost}🪙)`);
+  }
+
+  // 手动补给：花金币补水/生态肥（资源 HUD 的 + 按钮）
+  refillRes(kind: 'water' | 'eco') {
+    const pl = this.player;
+    const cfg = kind === 'water' ? { amt: 100, cost: 60, cap: 300, name: '水' } : { amt: 100, cost: 100, cap: 400, name: '生态肥' };
+    if (pl.coins < cfg.cost) return this.pushToast(`🪙 金币不足（补给${cfg.name}需 ${cfg.cost}🪙）`);
+    pl.coins -= cfg.cost;
+    pl[kind] = Math.min(cfg.cap, pl[kind] + cfg.amt);
+    this.pushToast(`🛒 补给${cfg.name} +${cfg.amt}（-${cfg.cost}🪙）`);
   }
 
   // 统计当前田间植株总数（给 HUD/stats 显示负载）
@@ -1307,6 +1403,10 @@ function emap(): Record<CropKey, number> {
 
 function freshEcon(): EconState {
   return { stock: emap(), fresh: 1, wh: emap(), whBasis: 0, decay: 0.05, fee: 3, seedStock: 0 };
+}
+
+function freshPlayer(): PlayerRes {
+  return { coins: 5000, energy: 120, energyMax: 120, water: 200, eco: 200 };
 }
 
 // 数值 clamp + 三位小数（折损率/仓储费均值回归用）

@@ -1,5 +1,5 @@
 import { dayState, WEATHER_META, isDisaster, wxPhase } from '../data/scenes';
-import { CROP_KEYS, type CropKey } from '../data/crops';
+import { CROP_KEYS, type CropKey, CROPS } from '../data/crops';
 import type { World, ManualTool } from '../sim/world';
 
 // 全量 HUD（DOM）—— 像素还原 FieldPlay.dc.html 的 HUD，挂在 #fp-root 内随舞台缩放。
@@ -11,8 +11,8 @@ const CROP_CN: Record<CropKey, string> = { tomato: '番茄', lettuce: '生菜', 
 
 // 手动模式工具条（图标 + 名称）
 const TOOLS: [ManualTool, string, string][] = [
-  ['water', '💧', '浇水'], ['fert', '🌿', '施肥'], ['harvest', '🌾', '收获'], ['weed', '🌱', '除草'],
-  ['clear', '🥀', '清枯'], ['till', '🚜', '耕地'], ['cover', '🧣', '保温'], ['drain', '🌊', '排水'],
+  ['plant', '🌱', '种植'], ['water', '💧', '浇水'], ['fert', '🌾', '施肥'], ['harvest', '🧺', '收获'], ['weed', '🌿', '除草'],
+  ['clear', '🥀', '清枯'], ['till', '🚜', '耕地'], ['cover', '🧣', '保温'], ['drain', '💦', '排水'],
 ];
 
 // AI 经营起始资金（与 world AI_START 对齐）—— 用于「本期盈亏」基准
@@ -44,6 +44,8 @@ export class GameHud {
     this.buildMarketPanel();
     this.buildStatusBar();
     this.buildToolbar();
+    this.buildResChips();
+    this.buildSeedBrush();
     this.buildWeatherPill();
     this.buildCodexNav();
     this.buildBuildings();
@@ -290,6 +292,41 @@ export class GameHud {
     this.root.appendChild(bar);
   }
 
+  // ============ 手动模式资源条（金币/体力/水/生态肥 + 补给按钮）============
+  private buildResChips() {
+    const bar = E('div', 'position:absolute; bottom:16px; left:50%; transform:translateX(-50%); display:none; align-items:center; gap:11px; background:linear-gradient(rgba(40,28,14,.82),rgba(40,28,14,.68)); border:1.5px solid rgba(176,134,63,.45); border-radius:16px; padding:7px 14px; box-shadow:0 6px 16px rgba(0,0,0,.32); pointer-events:auto;');
+    const chip = (icon: string, key: string, refill?: 'water' | 'eco') => {
+      const c = E('div', 'display:flex; align-items:center; gap:4px; font-size:14px; font-weight:800; color:#f4ecd8;');
+      c.append(E('span', 'font-size:16px;', { text: icon }));
+      const val = E('span', '', { text: '0', cls: 'fp-num' });
+      this.r['res_' + key] = val;
+      c.append(val);
+      if (refill) {
+        const add = E('button', 'margin-left:1px; width:19px; height:19px; border:none; border-radius:6px; background:rgba(126,201,67,.55); color:#fff; font-size:14px; font-weight:900; line-height:1; cursor:pointer;', { text: '+' }) as HTMLButtonElement;
+        add.onclick = () => this.world.refillRes(refill);
+        c.append(add);
+      }
+      return c;
+    };
+    bar.append(chip('🪙', 'coins'), chip('⚡', 'energy'), chip('💧', 'water', 'water'), chip('🌿', 'eco', 'eco'));
+    this.r.resChips = bar;
+    this.root.appendChild(bar);
+  }
+
+  // ============ 手动模式选种 brush（选「种植」工具时出现，点作物选种→再点空地播种）============
+  private buildSeedBrush() {
+    const bar = E('div', 'position:absolute; bottom:62px; left:50%; transform:translateX(-50%); display:none; align-items:flex-end; gap:7px; background:linear-gradient(rgba(40,28,14,.74),rgba(40,28,14,.58)); border-radius:14px; padding:6px 10px; box-shadow:0 4px 12px rgba(0,0,0,.3); pointer-events:auto;');
+    for (const k of CROP_KEYS) {
+      const b = E('button', 'display:flex; flex-direction:column; align-items:center; gap:1px; border:none; border-radius:10px; padding:5px 8px; cursor:pointer; background:transparent; color:#f0e6d2; transition:.12s;') as HTMLButtonElement;
+      b.append(E('span', 'font-size:20px; line-height:1;', { text: CROP_ICON[k] }), E('span', 'font-size:10px; font-weight:800; white-space:nowrap;', { text: `${CROP_CN[k]} ${CROPS[k].seed}🪙` }));
+      b.onclick = () => { this.world.manualSeed = k; this.toast(`选种「${CROP_CN[k]}」· 点空地播种`); };
+      this.r['seed_' + k] = b;
+      bar.appendChild(b);
+    }
+    this.r.seedBrush = bar;
+    this.root.appendChild(bar);
+  }
+
   // ============ 巡田路径编辑器（SVG 覆盖层：拖节点改路 / 点空白加节点 / 点两节点连断线）============
   private buildPathEditor() {
     const NS = 'http://www.w3.org/2000/svg';
@@ -505,14 +542,29 @@ export class GameHud {
     this.r.statusBar.style.display = auto ? 'flex' : 'none';
     this.r.pathBtn.style.display = (auto && !w.roadEditOn) ? 'flex' : 'none';
     this.r.marketPanel.style.display = auto ? 'none' : 'block';
-    // 手动工具条（手动模式显示，高亮当前工具）
+    // 手动工具条 + 资源条 + 选种 brush（手动模式显示）
     this.r.toolbar.style.display = auto ? 'none' : 'flex';
+    this.r.resChips.style.display = auto ? 'none' : 'flex';
+    this.r.seedBrush.style.display = (!auto && w.manualTool === 'plant') ? 'flex' : 'none';
     if (!auto) {
       for (const [key] of TOOLS) {
         const b = this.r['tool_' + key];
         const on = w.manualTool === key;
         b.style.background = on ? 'linear-gradient(#7ec943,#54992c)' : 'transparent';
         b.style.color = on ? '#fff' : '#cfe0d4';
+      }
+      // 资源条数值（金币/体力/水/生态肥）
+      const pl = w.player;
+      this.r.res_coins.textContent = fmt(pl.coins);
+      this.r.res_energy.textContent = Math.round(pl.energy) + '/' + pl.energyMax;
+      this.r.res_water.textContent = String(Math.round(pl.water));
+      this.r.res_eco.textContent = String(Math.round(pl.eco));
+      // 选种高亮
+      for (const k of CROP_KEYS) {
+        const sb = this.r['seed_' + k];
+        const on = w.manualSeed === k;
+        sb.style.background = on ? 'linear-gradient(#7ec943,#54992c)' : 'transparent';
+        sb.style.color = on ? '#fff' : '#f0e6d2';
       }
     }
 
