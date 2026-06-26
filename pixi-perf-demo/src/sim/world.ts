@@ -379,7 +379,8 @@ export class World {
     let best: CropKey = CROP_KEYS[0], bestV = -Infinity;
     for (const k of CROP_KEYS) {
       const c = CROPS[k];
-      const ev = 0.55 * (c.sell * (this.market[k] || 1) - c.seed) + 0.45 * (this.ai.q[k] || 0);
+      // 行情毛利 + 学习 Q + 应季加成（应季作物长得快产量高 → 优先种当季）
+      const ev = 0.55 * (c.sell * (this.market[k] || 1) - c.seed) + 0.45 * (this.ai.q[k] || 0) + (this.seasonFit(k) - 0.7) * 180;
       if (ev > bestV) { bestV = ev; best = k; }
     }
     return best;
@@ -538,7 +539,7 @@ export class World {
   }
   private hasYoung(p: Plot): boolean { return p.slots.some((sl) => sl.phase === 'grow' && !sl.dead && sl.growth < 400); }
   private plotHasEmpty(p: Plot): boolean { return p.slots.some((sl) => sl.phase === 'empty'); } // 收割后空置、待翻耕
-  private plotTilled(p: Plot): boolean { return p.slots.some((sl) => sl.phase === 'tilled'); } // 已翻耕、待播种
+  private plotTilled(p: Plot): boolean { return p.slots.length > 0 && p.slots.every((sl) => sl.phase === 'tilled'); } // 整块已翻耕待播（与 plantPlot 守卫一致 → 避免半块翻耕时反复空播种卡死）
 
   // 天气相位经济（移植 H5 wxTaskMod）：抢险任务(保温/排水)在灾害高潮期更费料、更费时、更耗电，起势/消退期省。
   private wxTaskMod(): { ecoMul: number; durMul: number; batMul: number } {
@@ -652,8 +653,8 @@ export class World {
   // 作物是否「需要浇水」：阴雨/霜冻/夜间植物蒸腾弱基本不需；晴/旱白天且有干燥活株才需（按天气+生长设任务，非看库存）
   needWater(p: Plot): boolean {
     const wx = this.weather.type;
-    if (wx === 'rain' || wx === 'lightrain' || wx === 'cloudy' || wx === 'frost') return false;
-    if (this.tod < 0.27 || this.tod > 0.80) return false; // 夜间
+    if (wx === 'rain' || wx === 'lightrain' || wx === 'cloudy' || wx === 'frost') return false; // 阴雨/霜冻：作物从天气得水、不蒸腾
+    // 不再硬排除夜间：夜里作物本就不耗水(lifeTick)→自然不渴；但若白天遗留了"真渴"的株(dry>0)，夜里也允许补救浇水，避免枯死
     return p.slots.some((sl) => sl.phase === 'grow' && !sl.dead && sl.growth < 400 && (sl.moist <= 2 || sl.dry > 0));
   }
   // 作物是否「需要施肥」：生长期(过了发芽、未将熟)且未在施肥冷却内（生长期勤施、其余基本不需）
@@ -1263,6 +1264,7 @@ export class World {
   private lifeTick() {
     const wInt = this.weatherIntensity();
     const wx = this.weather.type;
+    const night = this.tod < 0.27 || this.tod > 0.80; // 夜间：作物蒸腾弱 → 基本不耗水、不旱死（与 needWater 口径一致，修"夜里不浇水却枯死")
     const wxRate = 0.3 + wInt * 1.1; // 灾害累积速率随强度
     for (const p of this.plots) {
       for (const sl of p.slots) {
@@ -1288,12 +1290,14 @@ export class World {
           if (sl.frost >= 4 && Math.random() < 0.17 * wInt) this.kill(sl, 'frozen');
         } else if (wx === 'drought') {
           sl.parch += wxRate;
-          if (sl.moist > 0) { sl.moist = Math.max(0, sl.moist - (wInt > 0.5 ? 2 : 1)); sl.dry = 0; }
-          else { sl.dry += wInt > 0.5 ? 2 : 1; if (sl.dry >= (DRY_DEATH[stage] || 5)) this.kill(sl, 'dry'); }
+          if (!night) { // 白天才耗水/旱死，夜间蒸腾弱
+            if (sl.moist > 0) { sl.moist = Math.max(0, sl.moist - (wInt > 0.5 ? 2 : 1)); sl.dry = 0; }
+            else { sl.dry += wInt > 0.5 ? 2 : 1; if (sl.dry >= (DRY_DEATH[stage] || 5)) this.kill(sl, 'dry'); }
+          }
         } else if (wx === 'cloudy' || wx === 'lightrain') {
           sl.dry = 0; sl.moist = Math.max(sl.moist, 2); // 阴雨补水
-        } else {
-          // 晴：耗水，断水累积缺水 → 旱死
+        } else if (!night) {
+          // 晴·白天：耗水，断水累积缺水 → 旱死（夜间不耗水、不旱死 → 机器人夜里不浇水也不会枯）
           if (sl.moist > 0) { sl.moist -= 1; sl.dry = 0; }
           else { sl.dry += 1; if (sl.dry >= (DRY_DEATH[stage] || 5)) this.kill(sl, 'dry'); }
         }
