@@ -32,6 +32,7 @@ export interface Plot {
   roadWeed: number; // 0..3 杂草爬上道路
   roadDmg: boolean; // 路面被杂草破坏
   idle: number; // 闲置 tick 计数（无活株则累加）→ 闲置土地税
+  malign: number; // 恶性草(Yellow Dock)侵染度 0..100：快蔓延 / 田里抢营养 / 路上毁路 / 难根除
 }
 
 // AI 自主经营学习状态（移植原型 state.ai 的 Q 学习经济）
@@ -304,7 +305,8 @@ export class World {
       const weeds = i % 4 === 0 ? 2 : i % 3 === 0 ? 1 : 0;
       // 初始 weedProg 与起始 weeds 等级对齐（撂荒进度的反推）
       const weedProg = weeds === 2 ? 60 : weeds === 1 ? 24 : 0;
-      this.plots.push({ id: i, slots, weeds, weedProg, roadWeed: 0, roadDmg: false, idle: 0 });
+      // 恶性草初始：仅 1 块轻度侵染做"种源"，随后自行蔓延（避免开局多块作物即长不动）
+      this.plots.push({ id: i, slots, weeds, weedProg, roadWeed: 0, roadDmg: false, idle: 0, malign: i === 5 ? 26 : 0 });
     }
   }
 
@@ -368,6 +370,8 @@ export class World {
       // 杂草拖慢生长：杂草率 >30% 起拖慢，最多降到 0.35（必须除草，对齐用户要求）
       const weedRate = Math.min(1, p.weedProg / 100);
       const weedFactor = weedRate > 0.3 ? Math.max(0.35, 1 - (weedRate - 0.3) * 1.2) : 1;
+      // 恶性草抢营养：侵染 >30 起急剧拖慢，重度几乎让作物长不动（rule3「无法正常生长」）
+      const malignFactor = p.malign > 30 ? Math.max(0.08, 1 - ((p.malign - 30) / 100) * 1.4) : 1;
       for (const sl of p.slots) {
         if (sl.dead) {
           sl.respawnT -= dtMS;
@@ -380,7 +384,7 @@ export class World {
           // 每作物按自身生长周期(GROW_SEC 秒)连续推进：growth 0→400；各株再乘个体 rate(0.6~1.4) → 平滑爬升、每株不同
           const gPerMs = (400 / ((GROW_SEC[sl.crop] || 130) * 1000)) * stressMul;
           const waterFactor = sl.dry > 0 ? 0.25 : 1; // 缺水拖慢生长
-          sl.growth += gPerMs * dtMS * sl.rate * (1 - wInt * (1 - stall) * 0.6) * waterFactor * weedFactor;
+          sl.growth += gPerMs * dtMS * sl.rate * (1 - wInt * (1 - stall) * 0.6) * waterFactor * weedFactor * malignFactor;
           if (sl.growth >= 400) sl.growth = 400;
         }
       }
@@ -449,6 +453,8 @@ export class World {
     if (this.res.water > 0 && wx !== 'rain' && wx !== 'frost') { const t = this.thirstiest(); if (t >= 0) { this.startTask({ kind: 'water', label: '浇水', plotId: t, workMs: 720, bat: 3, atBuilding: false }, this.approachPoint(t)); return; } }
     const dead = this.findPlot((p) => p.slots.some((sl) => sl.dead));
     if (dead >= 0) { this.startTask({ kind: 'clear', label: '清枯', plotId: dead, workMs: 600, bat: 3, atBuilding: false }, this.approachPoint(dead)); return; }
+    const malignant = this.findPlot((p) => p.malign >= 35); // 恶性草优先：更费时(2800ms)更耗电(9)，且难根除→只能压制（rule3 任务类型/难度）
+    if (malignant >= 0) { this.startTask({ kind: 'weed', label: '清除恶性草', plotId: malignant, workMs: 2800, bat: 9, atBuilding: false }, this.approachPoint(malignant)); return; }
     const weedy = this.findPlot((p) => p.weedProg >= 40); // 杂草率达 ~40% 即除草（生长惩罚 30% 起，留缓冲）
     if (weedy >= 0) { this.startTask({ kind: 'weed', label: '除草', plotId: weedy, workMs: 1600, bat: 5, atBuilding: false }, this.approachPoint(weedy)); return; }
     const tillable = this.findPlot((p) => p.weeds === 1); // 轻草地块翻耕保养（松土清杂）
@@ -547,7 +553,12 @@ export class World {
   private coverPlot(id: number) { const p = this.plots[id]; if (!p) return; for (const sl of p.slots) if (!sl.dead) sl.frost = Math.max(0, sl.frost - 4); this.ai.last = '🧣 覆盖稻草保温，抵御霜冻'; }
   private fertPlot(id: number) { const p = this.plots[id]; if (!p) return; for (const sl of p.slots) if (!sl.dead && sl.growth < 400) sl.growth = Math.min(400, sl.growth + 18); this.ai.last = '🌿 精准施肥，加速生长'; }
   private clearPlot(id: number) { const p = this.plots[id]; if (!p) return; let n = 0; for (const sl of p.slots) if (sl.dead) { this.respawn(sl); n++; } if (n > 0) this.ai.last = `🥀 清除 ${n} 株枯株`; }
-  private weedPlot(id: number) { const p = this.plots[id]; if (!p) return; p.weeds = 0; p.weedProg = 0; p.roadWeed = p.roadDmg ? p.roadWeed : 0; this.ai.last = '🌿 清除杂草，恢复可耕作'; }
+  private weedPlot(id: number) {
+    const p = this.plots[id]; if (!p) return;
+    p.weeds = 0; p.weedProg = 0; p.roadWeed = p.roadDmg ? p.roadWeed : 0;
+    if (p.malign >= 35) { p.malign = Math.max(22, p.malign - 55); this.ai.last = '☠️ 压制恶性草（难根除，将复发）'; } // 只能压制不能根除（rule3）
+    else this.ai.last = '🌿 清除杂草，恢复可耕作';
+  }
   private tillPlot(id: number) { const p = this.plots[id]; if (!p) return; for (const sl of p.slots) if (sl.dead) this.respawn(sl); p.weeds = 0; p.weedProg = 0; this.ai.last = '🚜 翻耕保养，松土清杂'; }
   private buyResource() {
     const k = this.buyResKey;
@@ -785,6 +796,15 @@ export class World {
         p.roadWeed = Math.min(3, Math.floor(over / 22));
         if (p.roadWeed >= 3) p.roadDmg = true;
       }
+      // 恶性草(Yellow Dock)：已侵染地块快蔓延、干净地块缓慢被侵入；雨天更快（rule3 蔓延快）
+      p.malign = Math.min(100, p.malign + (p.malign > 4 ? 1.25 : 0.13) * (wx === 'rain' ? 1.5 : 1));
+      // 长在路上 → 快速毁路：重度侵染推高道路杂草并破坏路面（rule3）
+      if (p.malign > 55) { p.roadWeed = Math.min(3, Math.max(p.roadWeed, Math.floor((p.malign - 55) / 14))); if (p.malign > 82) p.roadDmg = true; }
+    }
+    // 蔓延：中重度侵染地块向随机另一地块播散恶性草（rule3 蔓延快）；机器人压制源头与之拉锯
+    if (this.plots.some((p) => p.malign > 45) && Math.random() < 0.07) {
+      const t = this.plots[(Math.random() * this.plots.length) | 0];
+      if (t) t.malign = Math.min(100, t.malign + 10);
     }
   }
 

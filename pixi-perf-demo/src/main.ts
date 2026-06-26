@@ -6,7 +6,7 @@ import { PlantAtlas } from './core/assets';
 import { av } from './core/assetVer';
 import { World } from './sim/world';
 import { Background } from './scene/background';
-import { Field } from './scene/field';
+import { Field, type WeedKind } from './scene/field';
 import { Robot } from './scene/robot';
 import { DayNight } from './scene/daynight';
 import { WeatherOverlay } from './scene/weather';
@@ -64,28 +64,35 @@ async function boot() {
 
   // 写实杂草贴图：只用「有完整生长过程」的三类；其余单图类型待用户补全分阶段后再全量启用。
   // 每类按阶段顺序加载（阶段数可不同，weed_8 为 4 阶段含开花）；缺某张则用同类已加载贴图兜底，整类全失败则丢弃。
-  // habitat：both=田/野皆有，wild=主要野地（田内只长 both 类，野地长全部）。开花阔叶类(毛茛/鬼针草)田野皆常见。
-  const WEED_DEFS: { files: string[]; habitat: 'both' | 'wild' }[] = [
-    { files: ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], habitat: 'both' }, // 毛茛类：幼苗→抽茎→开黄花→结实枯黄
-    { files: ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'], habitat: 'wild' },                   // 主要野地
-    { files: ['weed_10_baby', 'weed_10_baby_grow', 'weed_10_mature'], habitat: 'wild' },           // 主要野地
-    { files: ['weed_11_baby', 'weed_11_grow', 'weed_11_flower', 'weed_11_mature'], habitat: 'both' }, // 鬼针草类：幼苗→抽茎→开白花→结刺果
+  // 野草登记表：分类(田地/野地/恶性) + 尺寸层级 + 蔓延形态 + 可生长区域。习性按真实生态设定，可调。
+  const WEED_DEFS: (Omit<WeedKind, 'stages'> & { files: string[] })[] = [
+    // 毛茛：田地类，喜水成片（rule4）
+    { files: ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], category: 'field', sizeH: 42, spread: 'patch', inField: true, inWild: true, onRoad: false, nearWater: true },
+    { files: ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'], category: 'wild', sizeH: 34, spread: 'mix', inField: false, inWild: true, onRoad: false, nearWater: false },
+    { files: ['weed_10_baby', 'weed_10_baby_grow', 'weed_10_mature'], category: 'wild', sizeH: 34, spread: 'mix', inField: false, inWild: true, onRoad: false, nearWater: false },
+    // 鬼针草：田地类（rule7 随机，可成片可单株）
+    { files: ['weed_11_baby', 'weed_11_grow', 'weed_11_flower', 'weed_11_mature'], category: 'field', sizeH: 40, spread: 'mix', inField: true, inWild: true, onRoad: false, nearWater: false },
+    // 蛇莓 Potentilla：田/路/野皆可，匍匐成片、矮（rule5）
+    { files: ['weed_potentilla_baby', 'weed_potentilla_grow', 'weed_potentilla_growflower', 'weed_potentilla_mature', 'weed_potentilla_withered'], category: 'field', sizeH: 26, spread: 'patch', inField: true, inWild: true, onRoad: true, nearWater: false },
+    // 车前草 Asiatic plantain：主要路上、单株（rule6）；尺寸 = Yellow Dock 的 60%（rule8）
+    { files: ['weed_plantain_baby', 'weed_plantain_grow', 'weed_plantain_flower', 'weed_plantain_withered'], category: 'wild', sizeH: 36, spread: 'single', inField: false, inWild: false, onRoad: true, nearWater: false },
+    // Yellow Dock：恶性类，最大≈番茄成熟期（rule8）；田/路/野皆可、快蔓延、抢营养、毁路（rule3）
+    { files: ['weed_yellowdock_baby', 'weed_yellowdock_grow', 'weed_yellowdock_flower', 'weed_yellowdock_withered'], category: 'malignant', sizeH: 60, spread: 'patch', inField: true, inWild: true, onRoad: true, nearWater: false },
   ];
-  const weedLoaded = (await Promise.all(
+  const weedKinds = (await Promise.all(
     WEED_DEFS.map(async (def) => {
       const texs = await Promise.all(def.files.map((f) => Assets.load<Texture>(av(`assets/${f}.png`)).catch(() => null)));
       const present = texs.filter((t): t is Texture => !!t);
       if (present.length === 0) return null;
-      return { stages: texs.map((t) => t ?? present[present.length - 1]) as Texture[], habitat: def.habitat };
+      const { files: _files, ...meta } = def;
+      return { ...meta, stages: texs.map((t) => t ?? present[present.length - 1]) as Texture[] } as WeedKind;
     }),
-  )).filter((x): x is { stages: Texture[]; habitat: 'both' | 'wild' } => !!x);
-  const weedTypes = weedLoaded.map((x) => x.stages);
-  const weedHabitats = weedLoaded.map((x) => x.habitat);
+  )).filter((x): x is WeedKind => !!x);
 
   // —— 场景图层 ——
   const background = new Background();
   const weatherOverlay = new WeatherOverlay();
-  const field = new Field(atlas, weedTypes, weedHabitats, (plotId) => {
+  const field = new Field(atlas, weedKinds, (plotId) => {
     if (world.mode === 'manual') world.manualAction(plotId);
     else world.burst(plotId, 'water');
   });

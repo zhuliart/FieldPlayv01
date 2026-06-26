@@ -24,6 +24,18 @@ interface SpriteRec {
   colorVar: number; // 每株自然色彩随机（乘法 tint）：有的更红/橙、有的偏黄绿
 }
 
+// 野草类型定义（习性分类 + 尺寸层级 + 蔓延形态 + 可生长区域）。由 main.ts 登记表加载贴图后构造。
+export interface WeedKind {
+  stages: Texture[];                          // 阶段贴图（baby→…→末，已统一画布归一化）
+  category: 'field' | 'wild' | 'malignant';   // 田地类 / 野地类 / 恶性类（标签）
+  sizeH: number;                              // 成熟目标高(px)：尺寸层级（Yellow Dock 最大≈番茄）
+  spread: 'patch' | 'single' | 'mix';         // 成片 / 单株 / 皆可
+  inField: boolean;                           // 可长在田里
+  inWild: boolean;                            // 可长在野地
+  onRoad: boolean;                            // 可长在巡田路上
+  nearWater: boolean;                         // 喜水（weed_8）
+}
+
 // 地块层：12 个可点多边形（点击=浇水）+ 全田作物精灵（共享图集 → 合批）。
 // 含逐项移植的「倒伏（lodging）随机机制」与「应激滤镜（旱黄/冻蓝/涝暗/枯褐/过熟褪色）」。
 export class Field {
@@ -31,19 +43,23 @@ export class Field {
   private cropLayer = new Container();
   private hitLayer = new Container();
   private recs: SpriteRec[] = [];
-  private weedTypes: Texture[][] = []; // 每类杂草一组阶段贴图（阶段数可不同）
-  private habitats: ('both' | 'wild')[] = []; // 习性：both=田/野皆有，wild=主要野地
-  private bothTypes: number[] = []; // habitat==='both' 的类型索引（田内杂草只用这些）
-  private weedRecs: { sprite: Sprite; plotId: number; order: number; stages: Texture[]; targetH: number; cur: number }[] = [];
+  private kinds: WeedKind[] = [];
+  private fieldKinds: number[] = []; // 可长在田里的类型索引
+  private wildKinds: number[] = [];  // 可长在野地的类型索引
+  private roadKinds: number[] = [];  // 可长在路上的类型索引
+  private weedRecs: { sprite: Sprite; plotId: number; order: number; kind: WeedKind; targetH: number; cur: number; malign: boolean }[] = [];
   // 野地杂草：田块之外(田埂/路边/前景空地)按自然习性长草，不翻耕/不被田务清除；贴巡田路(onPath)者被经过的机器人压除
-  private wildRecs: { sprite: Sprite; stages: Texture[]; targetH: number; cur: number; onPath: boolean; prog: number }[] = [];
+  private wildRecs: { sprite: Sprite; kind: WeedKind; targetH: number; cur: number; onPath: boolean; prog: number }[] = [];
   private actor: Container | null = null; // 机器人机身（放进作物层做深度排序；重建时需保留）
 
-  constructor(private atlas: PlantAtlas, weedTypes: Texture[][], habitats: ('both' | 'wild')[], private onPlotTap: (plotId: number) => void) {
-    this.weedTypes = weedTypes;
-    this.habitats = habitats;
-    this.bothTypes = weedTypes.map((_, i) => i).filter((i) => (this.habitats[i] ?? 'both') === 'both');
-    if (this.bothTypes.length === 0) this.bothTypes = weedTypes.map((_, i) => i); // 兜底：无 both 类则田内用全部
+  constructor(private atlas: PlantAtlas, kinds: WeedKind[], private onPlotTap: (plotId: number) => void) {
+    this.kinds = kinds;
+    this.fieldKinds = kinds.map((_, i) => i).filter((i) => kinds[i].inField);
+    this.wildKinds = kinds.map((_, i) => i).filter((i) => kinds[i].inWild);
+    this.roadKinds = kinds.map((_, i) => i).filter((i) => kinds[i].onRoad);
+    if (this.fieldKinds.length === 0) this.fieldKinds = kinds.map((_, i) => i); // 兜底
+    if (this.wildKinds.length === 0) this.wildKinds = kinds.map((_, i) => i);
+    if (this.roadKinds.length === 0) this.roadKinds = this.wildKinds.slice();
     this.cropLayer.sortableChildren = true; // 作物 + 杂草 + 机器人机身 共用此层，按 y 纵深统一排序
     this.view.addChild(this.cropLayer);
     this.view.addChild(this.hitLayer);
@@ -106,21 +122,20 @@ export class Field {
           colorVar: makeColorVar(p.id, idx),
         });
       });
-      // 杂草：每地块预置 ~12 株（随机位置/类型，写实三阶段贴图），随 weedProg 逐株出现、换阶段(幼→中→熟)并长大（蔓延）
-      for (let k = 0; this.weedTypes.length > 0 && k < 12; k++) {
+      // 田内杂草：每地块预置 ~12 株（只用 inField 类型；恶性株按 plot.malign 出现，其余按 weedProg）
+      for (let k = 0; this.fieldKinds.length > 0 && k < 12; k++) {
         const wpt = quadPoint(q, 0.1 + plantHash(p.id, k, 21) * 0.8, 0.12 + plantHash(p.id, k, 22) * 0.76);
-        const type = this.bothTypes[Math.floor(plantHash(p.id, k, 23) * this.bothTypes.length) % this.bothTypes.length]; // 田内只用「田/野皆有」类
-        const stages = this.weedTypes[type]; // [幼苗, 生长, 成熟...]
-        const s = new Sprite(stages[0]);
-        s.anchor.set(0.5, 0.96);
+        const kind = this.kinds[this.fieldKinds[Math.floor(plantHash(p.id, k, 23) * this.fieldKinds.length) % this.fieldKinds.length]];
+        const s = new Sprite(kind.stages[0]);
+        s.anchor.set(0.5, 0.99);
         s.position.set(pctX(wpt.x), pctY(wpt.y));
         s.zIndex = wpt.y; // 与作物/机身同层按 y 排序 → 身前的杂草遮挡机器人底部，身后的在其后
         s.visible = false;
         this.cropLayer.addChild(s);
         const depthScale = 0.6 + (wpt.y / 100) * 0.7; // 近大远小
         const sizeJit = 0.8 + plantHash(p.id, k, 24) * 0.5;
-        const targetH = 34 * depthScale * sizeJit; // 成熟期目标高度(px)：小而朴素的地面杂草
-        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, stages, targetH, cur: -1 });
+        const targetH = kind.sizeH * depthScale * sizeJit; // 按类型尺寸层级
+        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, kind, targetH, cur: -1, malign: kind.category === 'malignant' });
       }
     }
     this.buildWildWeeds(world);
@@ -130,7 +145,7 @@ export class Field {
   // 限定在地面带(纵向 50~99%，避开远山/天空)。贴近巡田路网节点者标 onPath → 经过的机器人会压除。
   private buildWildWeeds(world: World) {
     this.wildRecs = [];
-    if (this.weedTypes.length === 0) return;
+    if (this.kinds.length === 0) return;
     const quads = Array.from({ length: 12 }, (_, i) => getQuad(i));
     const nodes = world.roadNet?.nodes ?? [];
     const edges = world.roadNet?.edges ?? [];
@@ -146,21 +161,21 @@ export class Field {
         const A = nodes[ia], B = nodes[ib];
         if (A && B && distToSeg(gx, gy, A.left, A.top, B.left, B.top) < 3.5) { onPath = true; break; }
       }
-      const wt = this.weedTypes.length;
-      const type = Math.floor(wildHash(a, 3) * wt) % wt; // 野地用全部类型（含仅野地的 wild 类）
-      const stages = this.weedTypes[type];
-      const s = new Sprite(stages[0]);
-      s.anchor.set(0.5, 0.96);
+      const pool = onPath ? this.roadKinds : this.wildKinds; // 路上用 onRoad 类(车前草/蛇莓/恶性)，开阔野地用 inWild 类
+      if (pool.length === 0) continue;
+      const kind = this.kinds[pool[Math.floor(wildHash(a, 3) * pool.length) % pool.length]];
+      const s = new Sprite(kind.stages[0]);
+      s.anchor.set(0.5, 0.99);
       s.position.set(pctX(gx), pctY(gy));
       s.zIndex = gy; // 与作物/机身同层按 y 纵深排序
       s.visible = false;
       this.cropLayer.addChild(s);
       const depthScale = 0.55 + (gy / 100) * 0.85;
       const sizeJit = 0.75 + wildHash(a, 4) * 0.7;
-      const targetH = 40 * depthScale * sizeJit; // 野地草比田内(34)略高
+      const targetH = kind.sizeH * depthScale * sizeJit; // 按类型尺寸层级
       // 初始成熟度参差(野地本就长期无人打理)；onPath 的起步低些(常被压)
       const prog = onPath ? wildHash(a, 6) * 18 : 12 + wildHash(a, 6) * 64;
-      this.wildRecs.push({ sprite: s, stages, targetH, cur: -1, onPath, prog });
+      this.wildRecs.push({ sprite: s, kind, targetH, cur: -1, onPath, prog });
       placed++;
     }
   }
@@ -255,17 +270,17 @@ export class Field {
     for (const wr of this.weedRecs) {
       const plot = world.plots[wr.plotId];
       if (!plot) { wr.sprite.visible = false; continue; }
-      const wp = plot.weedProg;
+      const wp = wr.malign ? plot.malign : plot.weedProg; // 恶性株按 malign(快蔓延)出现，普通株按 weedProg
       const appearAt = wr.order * 7 + 6; // 越靠后的草越晚冒出 → 视觉上"蔓延"
       if (wp <= appearAt) { wr.sprite.visible = false; continue; }
       wr.sprite.visible = true;
       const grow = Math.min(1, (wp - appearAt) / 30); // 0..1 该株生长进度
-      const n = wr.stages.length;                         // 各类阶段数可不同（weed_8 为 4 阶段含开花）
-      const wstage = Math.min(n - 1, Math.floor(grow * n)); // 按阶段数均分生长进度，逐阶换贴图
-      if (wr.cur !== wstage) { wr.sprite.texture = wr.stages[wstage]; wr.cur = wstage; }
+      const stg = wr.kind.stages;                          // 各类阶段数可不同
+      const wstage = Math.min(stg.length - 1, Math.floor(grow * stg.length)); // 按阶段数均分生长进度
+      if (wr.cur !== wstage) { wr.sprite.texture = stg[wstage]; wr.cur = wstage; }
       // 屏上高度连续(0.42→1.0×targetH)，除以当前阶段贴图实高 → 换阶段不跳高，只换形态细节
       const h = wr.targetH * (0.42 + 0.58 * grow);
-      wr.sprite.scale.set(h / (wr.stages[wstage].height || 1));
+      wr.sprite.scale.set(h / (stg[wstage].height || 1));
       wr.sprite.tint = relight;
     }
 
@@ -278,11 +293,11 @@ export class Field {
       if (wr.prog < 4) { wr.sprite.visible = false; continue; }
       wr.sprite.visible = true;
       const grow = wr.prog / 100;
-      const n = wr.stages.length;
-      const wstage = Math.min(n - 1, Math.floor(grow * n));
-      if (wr.cur !== wstage) { wr.sprite.texture = wr.stages[wstage]; wr.cur = wstage; }
+      const stg = wr.kind.stages;
+      const wstage = Math.min(stg.length - 1, Math.floor(grow * stg.length));
+      if (wr.cur !== wstage) { wr.sprite.texture = stg[wstage]; wr.cur = wstage; }
       const h = wr.targetH * (0.42 + 0.58 * grow);
-      wr.sprite.scale.set(h / (wr.stages[wstage].height || 1));
+      wr.sprite.scale.set(h / (stg[wstage].height || 1));
       wr.sprite.tint = relight;
     }
   }
