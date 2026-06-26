@@ -114,7 +114,7 @@ export interface RoadNet {
 
 // 机器人当前任务（需求驱动决策的产物）
 interface RobotTask {
-  kind: 'water' | 'fert' | 'cover' | 'drain' | 'harvest' | 'clear' | 'weed' | 'till' | 'plant' | 'buy' | 'sell' | 'sellwh' | 'store' | 'charge' | 'idle';
+  kind: 'water' | 'fert' | 'cover' | 'drain' | 'harvest' | 'clear' | 'weed' | 'till' | 'plant' | 'repair' | 'buy' | 'sell' | 'sellwh' | 'store' | 'charge' | 'idle';
   label: string;
   plotId: number; // -1 表示建筑/无地块
   workMs: number; // 到点作业停顿时长（对齐原型 workMs）
@@ -136,13 +136,14 @@ const IDLE_TAX = 44; // 单块闲置税基（每次随机浮动）
 const BANKRUPT = -20000; // 资金跌破即破产重置
 
 // 机器人物料库存：作业消耗、去商店补给
-type ResKey = 'water' | 'eco' | 'thermal' | 'seed';
-const RES_MAX: Record<ResKey, number> = { water: 120, eco: 80, thermal: 50, seed: 60 };
-const RES_NAME: Record<ResKey, string> = { water: '水', eco: '生态肥', thermal: '保温材料', seed: '种子' };
+// 机器人作业物料（对齐 H5 双池：水 + 生态肥）。保温/排水均吃生态肥；种子走 econ.seedStock。
+type ResKey = 'water' | 'eco';
+const RES_MAX: Record<ResKey, number> = { water: 120, eco: 80 };
+const RES_NAME: Record<ResKey, string> = { water: '水', eco: '生态肥' };
 // 任务 → 机器人作业模块盒配色（robot.ts 读 module）
 const MOD_FOR: Record<string, string> = {
   water: 'water', drain: 'water', fert: 'fert', cover: 'fert', harvest: 'harvest',
-  clear: 'fert', weed: 'fert', till: 'harvest', plant: 'fert', buy: 'patrol', sell: 'patrol', sellwh: 'patrol', store: 'patrol', charge: 'patrol', idle: 'patrol',
+  clear: 'fert', weed: 'fert', till: 'harvest', plant: 'fert', repair: 'patrol', buy: 'patrol', sell: 'patrol', sellwh: 'patrol', store: 'patrol', charge: 'patrol', idle: 'patrol',
 };
 
 // 农场坐标：四川巴中市南江县南江镇 ≈ 32.353N, 106.843E（实时天气锚点）
@@ -215,7 +216,7 @@ export class World {
   pendingBursts: Burst[] = [];
 
   // 机器人 AI 状态机（需求驱动：扫描田地选最高优先级任务 → 移动 → 作业/买卖 → 充电）
-  res: Record<ResKey, number> = { water: 100, eco: 60, thermal: 30, seed: 40 };
+  res: Record<ResKey, number> = { water: 100, eco: 60 };
   robotBattery = 86;
   private rPhase: 'decide' | 'move' | 'work' | 'charge' = 'decide';
   private rTask: RobotTask | null = null;
@@ -451,9 +452,7 @@ export class World {
       this.rTask = null;
       return;
     }
-    if (this.rPhase === 'move' || this.rPhase === 'work') {
-      this.robotBattery = Math.max(0, this.robotBattery - 0.0016 * dtMS); // 移动/作业缓慢耗电
-    }
+    // 对齐 H5：移动不耗电，仅作业执行时按任务 bat 扣电（在 robotWork 里一次性扣）
     switch (this.rPhase) {
       case 'decide': this.robotDecide(); break;
       case 'move': this.robotMove(dtMS); break;
@@ -475,39 +474,38 @@ export class World {
   private plotHasEmpty(p: Plot): boolean { return p.slots.some((sl) => sl.phase === 'empty'); } // 收割后空置、待翻耕
   private plotTilled(p: Plot): boolean { return p.slots.some((sl) => sl.phase === 'tilled'); } // 已翻耕、待播种
 
-  // 扫描田地，选最高优先级任务：充电→补料→采收→抢险(排水/保温)→浇水→清枯→除草→施肥→卖货→待命
+  // 天气相位经济（移植 H5 wxTaskMod）：抢险任务(保温/排水)在灾害高潮期更费料、更费时、更耗电，起势/消退期省。
+  private wxTaskMod(): { ecoMul: number; durMul: number; batMul: number } {
+    if (!isDisaster(this.weather.type)) return { ecoMul: 1, durMul: 1, batMul: 1 };
+    const prog = this.weatherProg();
+    if (prog < 0.34) return { ecoMul: 0.5, durMul: 0.6, batMul: 0.6 }; // 起势
+    if (prog < 0.7) return { ecoMul: 1.8, durMul: 1.7, batMul: 1.8 }; // 高潮
+    return { ecoMul: 0.5, durMul: 0.5, batMul: 0.5 }; // 消退
+  }
+
+  // 扫描田地选最高优先级任务，严格对齐 H5 aiStep 顺序：
+  // 充电 > 浇水 > 采收 > 清枯 > 保温 > 排水 > 施肥 > 清仓/出售/入库 > 除恶性草/除草 > 修路 > 翻耕 > 买种 > 播种 >(补料)> 待命
   private robotDecide() {
     const wx = this.weather.type;
     if (this.robotBattery < 14) { // 对齐 H5：电量<14 返回充电
       this.startTask({ kind: 'charge', label: '返回充电', plotId: -1, workMs: 0, bat: 0, atBuilding: true }, MAP.station);
       return;
     }
-    const low = this.lowestRes();
-    if (low && this.ai.funds > 300) {
-      this.buyResKey = low; this.buySeed = false;
-      this.startTask({ kind: 'buy', label: '采购' + RES_NAME[low], plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop);
-      return;
-    }
+    // 1. 浇水（H5 田间最高优先：先保命再收割）
+    if (this.res.water > 0 && wx !== 'rain' && wx !== 'frost') { const t = this.thirstiest(); if (t >= 0) { this.startTask({ kind: 'water', label: '浇水', plotId: t, workMs: 720, bat: 3, atBuilding: false }, this.approachPoint(t)); return; } }
+    // 2. 采收
     const ripe = this.findPlot((p) => p.slots.some((sl) => sl.phase === 'grow' && !sl.dead && sl.growth >= 400));
     if (ripe >= 0) { this.startTask({ kind: 'harvest', label: '采收', plotId: ripe, workMs: 900, bat: 3, atBuilding: false }, this.approachPoint(ripe)); return; }
-    if (wx === 'rain') { const t = this.findPlot((p) => this.hasYoung(p)); if (t >= 0) { this.startTask({ kind: 'drain', label: '开沟排水', plotId: t, workMs: 900, bat: 4, atBuilding: false }, this.approachPoint(t)); return; } }
-    if (wx === 'frost' && this.res.thermal > 0) { const t = this.findPlot((p) => this.hasYoung(p)); if (t >= 0) { this.startTask({ kind: 'cover', label: '覆盖保温', plotId: t, workMs: 900, bat: 4, atBuilding: false }, this.approachPoint(t)); return; } }
-    if (this.res.water > 0 && wx !== 'rain' && wx !== 'frost') { const t = this.thirstiest(); if (t >= 0) { this.startTask({ kind: 'water', label: '浇水', plotId: t, workMs: 720, bat: 3, atBuilding: false }, this.approachPoint(t)); return; } }
+    // 3. 清枯
     const dead = this.findPlot((p) => p.slots.some((sl) => sl.dead));
     if (dead >= 0) { this.startTask({ kind: 'clear', label: '清枯', plotId: dead, workMs: 600, bat: 3, atBuilding: false }, this.approachPoint(dead)); return; }
-    const malignant = this.findPlot((p) => p.malign >= 35); // 恶性草优先：更费时(2800ms)更耗电(9)，且难根除→只能压制（rule3 任务类型/难度）
-    if (malignant >= 0) { this.startTask({ kind: 'weed', label: '清除恶性草', plotId: malignant, workMs: 2800, bat: 9, atBuilding: false }, this.approachPoint(malignant)); return; }
-    const weedy = this.findPlot((p) => p.weedProg >= 40); // 杂草率达 ~40% 即除草（生长惩罚 30% 起，留缓冲）
-    if (weedy >= 0) { this.startTask({ kind: 'weed', label: '除草', plotId: weedy, workMs: 1600, bat: 5, atBuilding: false }, this.approachPoint(weedy)); return; }
-    const tillable = this.findPlot((p) => this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)); // 整块收割完(无在长/无枯株)才翻耕，避免混茬
-    if (tillable >= 0) { this.startTask({ kind: 'till', label: '翻耕整地', plotId: tillable, workMs: 1100, bat: 4, atBuilding: false }, this.approachPoint(tillable)); return; }
-    const plantable = this.findPlot((p) => this.plotTilled(p)); // 已翻耕地块补种（对齐 H5：先 buy 种子，后 plant）
-    if (plantable >= 0) {
-      if (this.econ.seedStock < 3 && this.ai.funds >= 990) { this.buySeed = true; this.startTask({ kind: 'buy', label: '采购种子', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop); return; }
-      if (this.econ.seedStock > 0) { this.startTask({ kind: 'plant', label: '播种', plotId: plantable, workMs: 720, bat: 3, atBuilding: false }, this.approachPoint(plantable)); return; }
-    }
-    if (wx === 'clear' && this.res.eco > 0) { const t = this.findPlot((p) => this.hasYoung(p)); if (t >= 0) { this.startTask({ kind: 'fert', label: '施肥', plotId: t, workMs: 720, bat: 3, atBuilding: false }, this.approachPoint(t)); return; } }
-    // —— 经营决策：清仓仓库 / 择机出售待售库存 / 低价入库（移植原型 wantSellWh/wantSell/wantStore）——
+    // 4. 覆盖保温（霜冻 + 生态肥≥8，对齐 H5；成本/时长/耗电随天气相位 wxTaskMod 缩放）
+    if (wx === 'frost' && this.res.eco >= 8) { const tm = this.wxTaskMod(); const t = this.findPlot((p) => this.hasYoung(p)); if (t >= 0) { this.startTask({ kind: 'cover', label: '覆盖保温', plotId: t, workMs: Math.round(900 * tm.durMul), bat: Math.max(1, Math.round(4 * tm.batMul)), atBuilding: false }, this.approachPoint(t)); return; } }
+    // 5. 开沟排水（暴雨；同样按天气相位缩放）
+    if (wx === 'rain') { const tm = this.wxTaskMod(); const t = this.findPlot((p) => this.hasYoung(p)); if (t >= 0) { this.startTask({ kind: 'drain', label: '开沟排水', plotId: t, workMs: Math.round(900 * tm.durMul), bat: Math.max(1, Math.round(4 * tm.batMul)), atBuilding: false }, this.approachPoint(t)); return; } }
+    // 6. 施肥（晴 + 生态肥≥20 + 50% 概率，对齐 H5 门槛）
+    if (wx === 'clear' && this.res.eco >= 20 && Math.random() < 0.5) { const t = this.findPlot((p) => this.hasYoung(p)); if (t >= 0) { this.startTask({ kind: 'fert', label: '施肥', plotId: t, workMs: 720, bat: 3, atBuilding: false }, this.approachPoint(t)); return; } }
+    // 7. 经营决策：清仓 > 出售 > 入库（对齐 H5 wantSellWh/wantSell/wantStore，置于田间养护之后、除草之前）
     const e = this.econ;
     const avgMkt = CROP_KEYS.reduce((s, k) => s + (this.market[k] || 1), 0) / CROP_KEYS.length;
     const stockN = this.cropCount(e.stock);
@@ -521,6 +519,26 @@ export class World {
     if (wantSellWh) { this.startTask({ kind: 'sellwh', label: '去商店清仓', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop); return; }
     if (wantSell) { this.startTask({ kind: 'sell', label: '去商店出售', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop); return; }
     if (wantStore) { this.startTask({ kind: 'store', label: '去仓库入库', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.warehouse); return; }
+    // 8. 除恶性草（Pixi 原创：更费时更耗电、难根除只压制）> 除草
+    const malignant = this.findPlot((p) => p.malign >= 35);
+    if (malignant >= 0) { this.startTask({ kind: 'weed', label: '清除恶性草', plotId: malignant, workMs: 2800, bat: 9, atBuilding: false }, this.approachPoint(malignant)); return; }
+    const weedy = this.findPlot((p) => p.weedProg >= 40); // 杂草率达 ~40% 即除草（生长惩罚 30% 起，留缓冲）
+    if (weedy >= 0) { this.startTask({ kind: 'weed', label: '除草', plotId: weedy, workMs: 1600, bat: 5, atBuilding: false }, this.approachPoint(weedy)); return; }
+    // 9. 修路（道路被杂草破坏/侵占，资金≥320，对齐 H5 repair）
+    const broken = this.findPlot((p) => p.roadDmg || p.roadWeed > 0);
+    if (broken >= 0 && this.ai.funds >= 320) { this.startTask({ kind: 'repair', label: '修路', plotId: broken, workMs: 1900, bat: 3, atBuilding: false }, this.approachPoint(broken)); return; }
+    // 10. 翻耕 > 买种 > 播种（收割→空地→翻耕→播种 轮作）
+    const tillable = this.findPlot((p) => this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)); // 整块收割完(无在长/无枯株)才翻耕，避免混茬
+    if (tillable >= 0) { this.startTask({ kind: 'till', label: '翻耕整地', plotId: tillable, workMs: 1100, bat: 4, atBuilding: false }, this.approachPoint(tillable)); return; }
+    const plantable = this.findPlot((p) => this.plotTilled(p));
+    if (plantable >= 0) {
+      if (this.econ.seedStock < 3 && this.ai.funds >= 990) { this.buySeed = true; this.startTask({ kind: 'buy', label: '采购种子', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop); return; }
+      if (this.econ.seedStock > 0) { this.startTask({ kind: 'plant', label: '播种', plotId: plantable, workMs: 720, bat: 3, atBuilding: false }, this.approachPoint(plantable)); return; }
+    }
+    // 11. 补给作业物料（Pixi 资源模型，低优先；P3 将并回 H5「仅买种子」口径）
+    const low = this.lowestRes();
+    if (low && this.ai.funds > 300) { this.buyResKey = low; this.buySeed = false; this.startTask({ kind: 'buy', label: '采购' + RES_NAME[low], plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop); return; }
+    // 12. 待命充电
     this.startTask({ kind: 'idle', label: '待命充电', plotId: -1, workMs: 0, bat: 0, atBuilding: true }, MAP.station);
   }
 
@@ -595,14 +613,15 @@ export class World {
     const burst = (kind: 'water' | 'fert') => { if (this.toggles.particles && id >= 0) this.pendingBursts.push({ plotId: id, kind }); };
     switch (t.kind) {
       case 'water': this.applyWater(id); this.res.water = Math.max(0, this.res.water - 4); burst('water'); break;
-      case 'drain': this.drainPlot(id); this.res.water = Math.max(0, this.res.water - 2); burst('water'); break;
+      case 'drain': this.drainPlot(id); this.res.eco = Math.max(0, this.res.eco - Math.round(6 * this.wxTaskMod().ecoMul)); burst('water'); break;
       case 'fert': this.fertPlot(id); this.res.eco = Math.max(0, this.res.eco - 3); burst('fert'); break;
-      case 'cover': this.coverPlot(id); this.res.thermal = Math.max(0, this.res.thermal - 4); burst('fert'); break;
+      case 'cover': this.coverPlot(id); this.res.eco = Math.max(0, this.res.eco - Math.round(8 * this.wxTaskMod().ecoMul)); burst('fert'); break;
       case 'harvest': this.harvestPlot(id); burst('fert'); break;
       case 'clear': this.clearPlot(id); burst('fert'); break;
       case 'weed': this.weedPlot(id); burst('fert'); break;
       case 'till': this.tillPlot(id); burst('fert'); break;
       case 'plant': this.plantPlot(id); burst('fert'); break;
+      case 'repair': this.repairPlot(id); break;
       case 'buy': this.buyResource(); break;
       case 'sell': this.sellStock(); break;
       case 'sellwh': this.sellWh(); break;
@@ -635,6 +654,16 @@ export class World {
     if (this.mode === 'auto') { for (const sl of p.slots) if (sl.phase === 'empty') sl.phase = 'tilled'; this.ai.last = '🚜 翻耕整地，准备播种'; }
     else { for (const sl of p.slots) if (sl.dead) this.respawn(sl); }
     p.weeds = 0; p.weedProg = 0; // 翻耕同时清除杂草
+  }
+  // 修路：清除道路杂草/破损，扣 320🪙（对齐 H5 robotRepair）
+  private repairPlot(id: number) {
+    const p = this.plots[id]; if (!p) return;
+    const cost = 320;
+    if (this.ai.funds < cost) { this.ai.last = '💰 资金不足，无法修路'; return; }
+    this.ai.funds -= cost;
+    p.roadWeed = 0; p.roadDmg = false;
+    this.ai.last = `🛠 修补受损道路（-${cost}🪙）`;
+    this.pushToast(this.ai.last);
   }
   private buyResource() {
     if (this.buySeed) { // 采购种子批：seedStock +9（对齐 H5 SEED_BATCH=9 / 990🪙）
@@ -679,7 +708,7 @@ export class World {
   }
   private findPlot(pred: (p: Plot) => boolean): number { for (const p of this.plots) if (pred(p)) return p.id; return -1; }
   private lowestRes(): ResKey | null {
-    const thr: Record<ResKey, number> = { water: 16, eco: 12, thermal: 8, seed: 0 }; // seed 由 econ.seedStock 接管，不再走作业物料采购
+    const thr: Record<ResKey, number> = { water: 16, eco: 12 }; // 仅水/生态肥（对齐 H5 双池）；种子由 econ.seedStock 接管
     let pick: ResKey | null = null, ratio = 1;
     (Object.keys(thr) as ResKey[]).forEach((k) => {
       if (this.res[k] < thr[k]) { const r = this.res[k] / RES_MAX[k]; if (r < ratio) { ratio = r; pick = k; } }
