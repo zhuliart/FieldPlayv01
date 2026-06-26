@@ -272,10 +272,10 @@ export class Field {
       const sl = plot?.slots[rec.slotIdx];
       if (!sl) { rec.shadow.visible = false; continue; }
       const a = rec.sprite, b = rec.sprite2;
-      // 收获后翻耕/休耕期：隐藏作物，露出翻耕裸土（收完不再瞬间满田新苗）
-      const fallow = sl.fallowMS > 0;
-      a.visible = !fallow; b.visible = !fallow;
-      if (fallow) { rec.shadow.visible = false; continue; }
+      // 收割后空置 / 翻耕 / 出苗期：隐藏作物，露出裸土（收割→翻耕→播种 轮作过程可见）
+      const bare = sl.fallowMS > 0 || sl.phase !== 'grow';
+      a.visible = !bare; b.visible = !bare;
+      if (bare) { rec.shadow.visible = false; continue; }
 
       const growthCont = Math.max(0, Math.min(4, sl.growth / 100));
       const stage = Math.min(4, Math.floor(growthCont));

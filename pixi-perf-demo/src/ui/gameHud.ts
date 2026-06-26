@@ -195,6 +195,10 @@ export class GameHud {
     const rowDec = E('div', 'display:flex; justify-content:space-between; font-size:10px; color:#eaf6e0;');
     this.r.aiTrades = numb('#fff'); this.r.aiSells = numb('#bff05f'); this.r.aiDeaths = numb('#ff9a8a'); this.r.aiExplore = numb('#fff');
     rowDec.append(lbl('决策 ', this.r.aiTrades), lbl('出售 ', this.r.aiSells), lbl('损失 ', this.r.aiDeaths), lbl('探索 ', this.r.aiExplore));
+    // 经营库存 / 仓储（P0 经济链：收获→待售→折损/入库→择机出售）
+    const rowEcon = E('div', 'display:flex; justify-content:space-between; font-size:10px; color:#eaf6e0;');
+    this.r.aiStock = numb('#ffe08a'); this.r.aiWh = numb('#8ad0ff'); this.r.aiDecay = numb('#ff9a8a'); this.r.aiSellTh = numb('#bff05f');
+    rowEcon.append(lbl('待售 ', this.r.aiStock), lbl('仓储 ', this.r.aiWh), lbl('折损 ', this.r.aiDecay), lbl('阈值 ', this.r.aiSellTh));
     // 学习摘要
     this.r.aiLast = E('div', 'font-size:10px; color:#eef6ea; background:rgba(126,201,67,.16); border:1px solid rgba(126,201,67,.3); border-radius:8px; padding:5px 8px; min-height:26px; display:flex; align-items:center; gap:5px; line-height:1.3;', { text: '🧠 行情看涨玉米…' });
     // 作物评分
@@ -214,7 +218,7 @@ export class GameHud {
       cropsWrap.appendChild(row);
       this.r['aiCropBar_' + k] = bar; this.r['aiCropScore_' + k] = score; this.r['aiCropPrice_' + k] = price;
     }
-    body.append(rowDec, this.r.aiLast, cropsTitle, cropsWrap);
+    body.append(rowDec, rowEcon, this.r.aiLast, cropsTitle, cropsWrap);
     this.r.aiBody = body;
     panel.append(head, sum, body);
     this.r.aiPanel = panel;
@@ -566,6 +570,13 @@ export class GameHud {
       this.r.aiSells.textContent = String(ai.sells);
       this.r.aiDeaths.textContent = String(ai.deaths);
       this.r.aiExplore.textContent = Math.round(ai.explore * 100) + '%';
+      const e = w.econ;
+      const stockN = CROP_KEYS.reduce((s, k) => s + (e.stock[k] || 0), 0);
+      const whN = CROP_KEYS.reduce((s, k) => s + (e.wh[k] || 0), 0);
+      this.r.aiStock.textContent = String(stockN);
+      this.r.aiWh.textContent = String(whN);
+      this.r.aiDecay.textContent = Math.round(e.decay * 100) + '%';
+      this.r.aiSellTh.textContent = String(Math.round(ai.sellThreshold));
       this.r.aiLast.textContent = '🧠 ' + ai.last;
       for (const k of CROP_KEYS) {
         // 收益评分（学习中）= Q 值归一化（原型 (q+150)/528）；右侧为实时市价
