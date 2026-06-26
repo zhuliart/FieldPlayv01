@@ -70,7 +70,7 @@ export class Field {
   private wildKinds: number[] = [];  // 可长在野地的类型索引
   private roadKinds: number[] = [];  // 可长在路上的类型索引
   // 田内杂草：随 weedProg 出现，出现后走个体生命周期(生长→成熟→枯萎转黑倒伏)，枯后保留为残株待机器人清枯(rule4)
-  private weedRecs: { sprite: Sprite; plotId: number; order: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: Sprite; colorVar: number; restAng: number; growMul: number; life: number; phase: number; hold: number; wither: number; lodge: number }[] = [];
+  private weedRecs: { sprite: Sprite; plotId: number; order: number; appear: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: Sprite; colorVar: number; restAng: number; growMul: number; life: number; phase: number; hold: number; wither: number; lodge: number }[] = [];
   // 野地杂草：田块外按习性长草，有完整生命周期（生长→成熟→枯萎→原地/异地重生）+ 多样性随机
   private wildRecs: { sprite: Sprite; shadow: Sprite; kind: WeedKind; onPath: boolean; bx: number; by: number; sizeJit: number; colorVar: number; restAng: number; growMul: number; cur: number; life: number; phase: number; hold: number; wither: number; lodge: number; pressed: boolean }[] = [];
   private roadNodes: { left: number; top: number }[] = []; // 供野草异地重生时判定 onPath
@@ -137,6 +137,9 @@ export class Field {
     if (this.actor) this.cropLayer.addChild(this.actor); // 重建作物时保留机身，否则被 removeChildren 清掉→机器人消失
     this.recs = [];
     this.weedRecs = [];
+    // 田内杂草分两池：非恶性田草(weed_8/11/蛇莓) 占绝大多数槽位；恶性草(yellowdock) 仅极少数槽位
+    const fieldRegular = this.fieldKinds.filter((i) => this.kinds[i].category !== 'malignant');
+    const fieldMalign = this.fieldKinds.filter((i) => this.kinds[i].category === 'malignant');
     for (const p of world.plots) {
       const q = getQuad(p.id);
       const pdepPct = Math.abs(q[2][1] - q[0][1]) || 1;
@@ -169,10 +172,15 @@ export class Field {
           shadow: this.mkShadow(),
         });
       });
-      // 田内杂草：每地块预置 ~12 株（只用 inField 类型；恶性株按 plot.malign 出现，其余按 weedProg）
+      // 田内杂草：每地块预置 12 株。恶性草仅占固定 2 槽位(k=4/9，低 appearAt→侵染中期才冒出)，其余 10 株全为非恶性田草
+      // → 大幅降低恶性草在田里的密度；普通草用密集递进 appear，提高其出现率。
+      let regIdx = 0;
       for (let k = 0; this.fieldKinds.length > 0 && k < 12; k++) {
         const wpt = quadPoint(q, 0.1 + plantHash(p.id, k, 21) * 0.8, 0.12 + plantHash(p.id, k, 22) * 0.76);
-        const kind = this.kinds[this.fieldKinds[Math.floor(plantHash(p.id, k, 23) * this.fieldKinds.length) % this.fieldKinds.length]];
+        const malignSlot = (k === 4 || k === 9) && fieldMalign.length > 0;
+        const pool = malignSlot ? fieldMalign : (fieldRegular.length > 0 ? fieldRegular : this.fieldKinds);
+        const kind = this.kinds[pool[Math.floor(plantHash(p.id, k, 23) * pool.length) % pool.length]];
+        const appear = malignSlot ? (k === 4 ? 12 : 30) : (regIdx++ * 5 + 4); // 恶性: malign>12/>30；普通: weedProg>4,9,14… 密集冒出
         const s = new Sprite(kind.stages[0]);
         s.anchor.set(0.5, 0.99);
         s.position.set(pctX(wpt.x), pctY(wpt.y));
@@ -181,7 +189,7 @@ export class Field {
         this.cropLayer.addChild(s);
         const sizeJit = 0.8 + plantHash(p.id, k, 24) * 0.5;
         const targetH = kind.sizeH * perspScale(wpt.y) * sizeJit; // 透视：远小近大 + 类型尺寸层级 + 随株大小
-        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, kind, targetH, cur: -1, malign: kind.category === 'malignant', shadow: this.mkShadow(), colorVar: weedTint(plantHash(p.id, k, 26), plantHash(p.id, k, 27)), restAng: (plantHash(p.id, k, 28) - 0.5) * 22, growMul: 0.7 + plantHash(p.id, k, 25) * 0.8, life: 0, phase: 0, hold: W_MATURE + plantHash(p.id, k, 29) * W_MATURE_RND, wither: 0, lodge: 0 });
+        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, appear, kind, targetH, cur: -1, malign: kind.category === 'malignant', shadow: this.mkShadow(), colorVar: weedTint(plantHash(p.id, k, 26), plantHash(p.id, k, 27)), restAng: (plantHash(p.id, k, 28) - 0.5) * 22, growMul: 0.7 + plantHash(p.id, k, 25) * 0.8, life: 0, phase: 0, hold: W_MATURE + plantHash(p.id, k, 29) * W_MATURE_RND, wither: 0, lodge: 0 });
       }
     }
     this.buildWildWeeds(world);
@@ -353,7 +361,7 @@ export class Field {
       const sp = wr.sprite;
       if (!plot) { sp.visible = false; wr.shadow.visible = false; continue; }
       const wp = wr.malign ? plot.malign : plot.weedProg; // 恶性株按 malign 出现，普通株按 weedProg
-      const appearAt = wr.order * 7 + 6; // 越靠后的草越晚冒出 → 视觉上"蔓延"
+      const appearAt = wr.appear; // 每株自带出现阈值（普通密集递进、恶性低阈值且仅 2 株）
       if (wp <= appearAt) { // 未冒出 / 已被除草翻耕 → 隐藏并复位生命周期
         sp.visible = false; wr.shadow.visible = false;
         wr.life = 0; wr.phase = 0; wr.wither = 0; wr.lodge = 0; wr.cur = -1; continue;

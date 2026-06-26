@@ -23,8 +23,8 @@ export interface Slot {
   phase: 'grow' | 'empty' | 'tilled';
 }
 
-// 各 stage 的耐旱阈值（发芽/幼苗脆弱、生长期更耐旱），移植原型 DRY_DEATH
-export const DRY_DEATH = [16, 18, 22, 26];
+// 各 stage 的耐旱阈值（发芽/幼苗脆弱、生长期更耐旱）。较原型上调：作物缺水不再轻易枯死，给机器人轮巡浇水留足缓冲
+export const DRY_DEATH = [28, 32, 38, 46];
 
 export interface Plot {
   id: number;
@@ -344,8 +344,8 @@ export class World {
       const weeds = i % 4 === 0 ? 2 : i % 3 === 0 ? 1 : 0;
       // 初始 weedProg 与起始 weeds 等级对齐（撂荒进度的反推）
       const weedProg = weeds === 2 ? 60 : weeds === 1 ? 24 : 0;
-      // 恶性草初始：仅 1 块轻度侵染做"种源"，随后自行蔓延（避免开局多块作物即长不动）
-      this.plots.push({ id: i, slots, weeds, weedProg, roadWeed: 0, roadDmg: false, idle: 0, malign: i === 5 ? 26 : 0 });
+      // 恶性草初始：仅 1 块低度侵染做"种源"(起点低于机器人清除阈值，缓慢爬升)，整体保持稀少
+      this.plots.push({ id: i, slots, weeds, weedProg, roadWeed: 0, roadDmg: false, idle: 0, malign: i === 5 ? 12 : 0 });
     }
   }
 
@@ -646,7 +646,7 @@ export class World {
   private weedPlot(id: number) {
     const p = this.plots[id]; if (!p) return;
     p.weeds = 0; p.weedProg = 0; p.roadWeed = p.roadDmg ? p.roadWeed : 0;
-    if (p.malign >= 35) { p.malign = Math.max(22, p.malign - 55); this.ai.last = '☠️ 压制恶性草（难根除，将复发）'; } // 只能压制不能根除（rule3）
+    if (p.malign >= 35) { p.malign = Math.max(6, p.malign - 70); this.ai.last = '☠️ 清除恶性草（难根除，仍会缓慢复发）'; } // 大幅压制回落低位，长时间才复发（rule3 难根除）
     else this.ai.last = '🌿 清除杂草，恢复可耕作';
   }
   private tillPlot(id: number) {
@@ -1009,15 +1009,15 @@ export class World {
         p.roadWeed = Math.min(3, Math.floor(over / 22));
         if (p.roadWeed >= 3) p.roadDmg = true;
       }
-      // 恶性草(Yellow Dock)：已侵染地块快蔓延、干净地块缓慢被侵入；雨天更快（rule3 蔓延快）
-      p.malign = Math.min(100, p.malign + (p.malign > 4 ? 1.25 : 0.13) * (wx === 'rain' ? 1.5 : 1));
-      // 长在路上 → 快速毁路：重度侵染推高道路杂草并破坏路面（rule3）
-      if (p.malign > 55) { p.roadWeed = Math.min(3, Math.max(p.roadWeed, Math.floor((p.malign - 55) / 14))); if (p.malign > 82) p.roadDmg = true; }
+      // 恶性草(Yellow Dock)：仅已侵染地块缓慢生长(频率大幅降低)；干净地块不自发起草，仅靠偶发播散；雨天略快
+      if (p.malign > 1) p.malign = Math.min(100, p.malign + 0.35 * (wx === 'rain' ? 1.4 : 1));
+      // 长在路上 → 毁路：仅重度侵染(阈值抬高)才推高道路杂草/破坏路面，几乎不触发
+      if (p.malign > 60) { p.roadWeed = Math.min(3, Math.max(p.roadWeed, Math.floor((p.malign - 60) / 16))); if (p.malign > 85) p.roadDmg = true; }
     }
-    // 蔓延：中重度侵染地块向随机另一地块播散恶性草（rule3 蔓延快）；机器人压制源头与之拉锯
-    if (this.plots.some((p) => p.malign > 45) && Math.random() < 0.07) {
+    // 播散：仅重度侵染(>55)地块偶尔(1.5%)向另一干净地块少量播散、且封顶很低 → 整体保持稀少，不再全田蔓延
+    if (this.plots.some((p) => p.malign > 55) && Math.random() < 0.015) {
       const t = this.plots[(Math.random() * this.plots.length) | 0];
-      if (t) t.malign = Math.min(100, t.malign + 10);
+      if (t && t.malign < 25) t.malign = Math.min(25, t.malign + 6);
     }
   }
 
@@ -1122,7 +1122,7 @@ export class World {
     if (!p) return;
     for (const sl of p.slots) {
       if (sl.dead) continue;
-      sl.moist = 6; sl.dry = 0;
+      sl.moist = 8; sl.dry = 0; // 浇透：湿度上调，延长两次浇水之间的耐受窗口
       if (sl.parch > 0) sl.parch = Math.max(0, sl.parch - 2);
     }
   }
