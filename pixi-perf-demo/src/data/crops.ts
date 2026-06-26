@@ -60,15 +60,16 @@ export const CROP_BOTTOM: Record<CropKey, number[]> = {
   lettuce: [0.645, 0.66, 0.751, 0.77, 0.808],
   corn: [0.835, 0.832, 0.842, 0.842, 0.84],
   chili: [0.59, 0.61, 0.621, 0.631, 0.659],
-  wheat: [0.96, 0.96, 0.96, 0.96, 0.96], // 已 trim 紧贴 bbox，根在底部
+  wheat: [0.994, 0.994, 0.994, 0.994, 0.994], // 统一画布(488×720)底部对齐，根线锚点（5阶段同）
 };
 
 // 冠幅系数（用于自动布点的行列密度）——冠幅越小→行列越密。小麦条播密植，冠幅最小。
-export const CANOPY_W: Record<string, number> = { corn: 0.135, tomato: 0.15, chili: 0.135, lettuce: 0.18, wheat: 0.07 };
+export const CANOPY_W: Record<string, number> = { corn: 0.135, tomato: 0.15, chili: 0.135, lettuce: 0.18, wheat: 0.05 };
 
 // 自动布点密度配置（原型 densityCfg / layoutMargin / layoutJitter）
 export const DENSITY = { sf: 2.55, cap: 5 };
-// 行列上限按作物覆盖（默认 DENSITY.cap=5）。小麦密植，单独抬高上限以铺满成密集麦田。
-export const DENSITY_CAP: Record<string, number> = { wheat: 8 };
+// 行列上限按作物覆盖（默认 DENSITY.cap=5）。小麦密植：上限抬到 12 → 株距(~20px)<株宽(~29px) 横向重叠约30%，
+// 麦秆互填缝隙、不再透出背景（消"半透/发蓝"）。约 12×12≈144 株/块（原 8×8=64 翻倍多）。
+export const DENSITY_CAP: Record<string, number> = { wheat: 12 };
 export const LAYOUT_MARGIN = 0.15;
 export const LAYOUT_JITTER = 0.03;
