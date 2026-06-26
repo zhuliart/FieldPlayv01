@@ -202,8 +202,8 @@ export class Field {
       return false;
     };
     // 落单株野草：避开田块/地面带外，按类型尺寸层级与 onPath 设定
-    const spawn = (gx: number, gy: number, ki: number, h: number): boolean => {
-      if (gx < 1 || gx > 99 || gy < 50 || gy > 99 || inField(gx, gy) || isBgVeg(gx, gy)) return false; // 避开田块 & 背景已有树/灌木
+    const spawn = (gx: number, gy: number, ki: number, h: number, ignoreVeg = false): boolean => {
+      if (gx < 1 || gx > 99 || gy < 50 || gy > 99 || inField(gx, gy) || (!ignoreVeg && isBgVeg(gx, gy))) return false; // 避开田块；默认避开背景树/灌木(喜水水源簇例外)
       const kind = this.kinds[ki];
       const s = new Sprite(kind.stages[0]);
       s.anchor.set(0.5, 0.99);
@@ -219,25 +219,25 @@ export class Field {
         colorVar: weedTint(wildHash(h, 9), wildHash(h, 10)),
         restAng: (wildHash(h, 11) - 0.5) * 22,
         growMul: 0.7 + wildHash(h, 12) * 0.8,
-        cur: -1, life: 0.12 + wildHash(h, 6) * 0.88, phase: 0,
+        cur: -1, life: 0.05 + wildHash(h, 6) * 0.7, phase: 0,
         hold: 4000 + wildHash(h, 8) * 12000, wither: 0, lodge: 0, pressed: false,
       });
       return true;
     };
     // 簇生：以 (cx,cy) 为中心按数量 n 撒同类成簇（n=1 即单株）
-    const cluster = (cx: number, cy: number, ki: number, n: number, base: number) => {
+    const cluster = (cx: number, cy: number, ki: number, n: number, base: number, ignoreVeg = false) => {
       for (let j = 0; j < n; j++) {
         const h = base * 23 + j;
-        spawn(j ? cx + (wildHash(h, 1) - 0.5) * 7 : cx, j ? cy + (wildHash(h, 2) - 0.5) * 4.5 : cy, ki, h);
+        spawn(j ? cx + (wildHash(h, 1) - 0.5) * 7 : cx, j ? cy + (wildHash(h, 2) - 0.5) * 4.5 : cy, ki, h, ignoreVeg);
       }
     };
     // 喜水成片（rule4）：水源角附近密集播 nearWater 类(weed_8) 几大簇
     const waterKi = this.kinds.findIndex((k) => k.nearWater && k.inWild);
     if (waterKi >= 0) {
-      for (let c = 0; c < 6; c++) {
-        const cx = WATER_SRC.x + (wildHash(901 + c, 1) - 0.5) * 20;
-        const cy = WATER_SRC.y + (wildHash(901 + c, 2) - 0.5) * 11;
-        cluster(cx, cy, waterKi, 4, 901 + c);
+      for (let c = 0; c < 7; c++) {
+        const cx = WATER_SRC.x + (wildHash(901 + c, 1) - 0.5) * 22;
+        const cy = WATER_SRC.y + (wildHash(901 + c, 2) - 0.5) * 12;
+        cluster(cx, cy, waterKi, 5, 901 + c, true); // 喜水成片：水源角(湿地草甸)即使背景有灌木也长 → weed_8 大片
       }
     }
     // 通用散布：patch 类成簇(3~4)、single 单株、mix 1~2（rule5/6/7）
@@ -463,7 +463,7 @@ function drawWeed(sp: Sprite, sh: Sprite, kind: WeedKind, targetH: number, life:
   const stg = kind.stages, N = stg.length, growN = kind.hasWithered ? N - 1 : N;
   const Lc = Math.min(1, life);
   const stage = phase >= 2 ? N - 1 : Math.min(growN - 1, Math.floor(Lc * growN)); // 枯萎显末帧；生长只到成熟
-  const plantH = targetH * (0.34 + 0.66 * Math.pow(Lc, 0.85)) * (1 - wither * 0.4); // 连续株高 + 枯萎大幅缩小
+  const plantH = targetH * (0.18 + 0.82 * Math.pow(Lc, 0.92)) * (1 - wither * 0.22); // 幼苗更小(0.18)→成熟(1.0)拉开差距；枯萎以倒伏/转黑为主、仅轻微缩
   if (plantH < 1.2 || fade <= 0.01) { sp.visible = false; sh.visible = false; return; }
   sp.visible = true;
   setTex(stage);

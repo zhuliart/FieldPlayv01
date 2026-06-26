@@ -84,7 +84,8 @@ export class Robot {
     }
     const dn = dayState(world.tod);
     const nightLight = dn.light;
-    const depthScale = Math.max(0.36, Math.min(1.18, +(1.0 + (r.top - 72) * 0.0188).toFixed(3)));
+    // 透视：近(top大)大、远(top小)显著小。加强斜率+下探下限 → 去商店/仓库(top~43-45)时明显缩小，不再和房子一样大
+    const depthScale = Math.max(0.28, Math.min(1.5, +(1.0 + (r.top - 73) * 0.026).toFixed(3)));
 
     // —— 机身 ——
     this.bobT += dtMS;

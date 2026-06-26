@@ -1,6 +1,5 @@
 import { dayState, WEATHER_META, isDisaster, wxPhase } from '../data/scenes';
 import { CROP_KEYS, type CropKey } from '../data/crops';
-import { pctX, pctY } from '../sim/layout';
 import type { World, ManualTool } from '../sim/world';
 
 // 全量 HUD（DOM）—— 像素还原 FieldPlay.dc.html 的 HUD，挂在 #fp-root 内随舞台缩放。
@@ -532,19 +531,9 @@ export class GameHud {
       this.r.wxPillPct.textContent = pct + '%';
     }
 
-    // 状态条 / 气泡
+    // 状态条（底部状态栏已显示机器人动作，去掉机器人头顶气泡避免重复）
     this.r.statusText.textContent = '托管中 · ' + w.robotAction;
-    if (auto && !w.robot.hidden) {
-      this.r.bubble.style.display = 'flex';
-      this.r.bubbleText.textContent = w.robotAction;
-      const bat = Math.max(0, Math.min(100, w.robotBattery));
-      this.r.bubbleBat.style.width = bat + '%';
-      this.r.bubbleBat.style.background = bat < 20 ? '#e0703a' : '#6fc23a';
-      this.r.bubble.style.left = pctX(w.robot.left) + 'px';
-      this.r.bubble.style.top = (pctY(w.robot.top) - 58) + 'px';
-    } else {
-      this.r.bubble.style.display = 'none';
-    }
+    this.r.bubble.style.display = 'none';
 
     // 基站充电 UI（电量 + 充电状态）
     const bat = Math.round(w.robotBattery);
