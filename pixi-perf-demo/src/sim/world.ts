@@ -123,10 +123,11 @@ interface RobotTask {
 }
 
 // 初始种子田（作物 + 起始阶段），移植自原型 seed 表的作物分布意图
+// 起始阶段错峰分布（0~4），避免开局多块同时成熟→同时收割→同时空置→任务扎堆；错峰后机器人自然在各田间穿插作业
 const SEED: [CropKey, number][] = [
-  ['corn', 4], ['tomato', 4], ['lettuce', 4], ['chili', 4],
-  ['wheat', 4], ['tomato', 2], ['corn', 4], ['chili', 3],
-  ['tomato', 3], ['lettuce', 4], ['wheat', 3], ['chili', 1],
+  ['corn', 1], ['tomato', 3], ['lettuce', 0], ['chili', 2],
+  ['wheat', 4], ['tomato', 1], ['corn', 3], ['chili', 0],
+  ['tomato', 2], ['lettuce', 4], ['wheat', 1], ['chili', 3],
 ];
 
 // 经济常量（原样移植原型）
@@ -198,6 +199,9 @@ export class World {
 
   // 待消费的播报（HUD 取走后清空）
   pendingToasts: string[] = [];
+
+  // 机器人改种不同作物后、需按新作物布点(autoPoints)重建精灵的地块（field 渲染层消费后清空）
+  dirtyPlots: number[] = [];
 
   plots: Plot[] = [];
   robot: RobotState = { ...MAP.robotHome, face: Math.PI, moving: false, module: null, hidden: false };
@@ -328,6 +332,7 @@ export class World {
 
   seed(capBoost = 0) {
     this.plots = [];
+    this.dirtyPlots.length = 0;
     for (let i = 0; i < 12; i++) {
       const [crop, stage] = SEED[i];
       const q = getQuad(i);
@@ -522,15 +527,16 @@ export class World {
     // 8. 除恶性草（Pixi 原创：更费时更耗电、难根除只压制）> 除草
     const malignant = this.findPlot((p) => p.malign >= 35);
     if (malignant >= 0) { this.startTask({ kind: 'weed', label: '清除恶性草', plotId: malignant, workMs: 2800, bat: 9, atBuilding: false }, this.approachPoint(malignant)); return; }
-    const weedy = this.findPlot((p) => p.weedProg >= 40); // 杂草率达 ~40% 即除草（生长惩罚 30% 起，留缓冲）
+    // 仅给「在长作物」的地块除草(护苗)；空地/撂荒的杂草交由翻耕清除 —— 否则空地以 1.1/tick 反复刷草、12 块轮一圈又满，机器人会永远卡在除草、永不翻耕播种
+    const weedy = this.findPlot((p) => p.weedProg >= 50 && this.hasYoung(p));
     if (weedy >= 0) { this.startTask({ kind: 'weed', label: '除草', plotId: weedy, workMs: 1600, bat: 5, atBuilding: false }, this.approachPoint(weedy)); return; }
     // 9. 修路（道路被杂草破坏/侵占，资金≥320，对齐 H5 repair）
     const broken = this.findPlot((p) => p.roadDmg || p.roadWeed > 0);
     if (broken >= 0 && this.ai.funds >= 320) { this.startTask({ kind: 'repair', label: '修路', plotId: broken, workMs: 1900, bat: 3, atBuilding: false }, this.approachPoint(broken)); return; }
-    // 10. 翻耕 > 买种 > 播种（收割→空地→翻耕→播种 轮作）
-    const tillable = this.findPlot((p) => this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)); // 整块收割完(无在长/无枯株)才翻耕，避免混茬
+    // 10. 翻耕 > 买种 > 播种（收割→空地→翻耕→播种 轮作；按闲置最久优先 → 各田轮替）
+    const tillable = this.findPlotByIdle((p) => this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)); // 整块收割完(无在长/无枯株)才翻耕，避免混茬
     if (tillable >= 0) { this.startTask({ kind: 'till', label: '翻耕整地', plotId: tillable, workMs: 1100, bat: 4, atBuilding: false }, this.approachPoint(tillable)); return; }
-    const plantable = this.findPlot((p) => this.plotTilled(p));
+    const plantable = this.findPlotByIdle((p) => this.plotTilled(p));
     if (plantable >= 0) {
       if (this.econ.seedStock < 3 && this.ai.funds >= 990) { this.buySeed = true; this.startTask({ kind: 'buy', label: '采购种子', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop); return; }
       if (this.econ.seedStock > 0) { this.startTask({ kind: 'plant', label: '播种', plotId: plantable, workMs: 720, bat: 3, atBuilding: false }, this.approachPoint(plantable)); return; }
@@ -707,6 +713,12 @@ export class World {
     return best;
   }
   private findPlot(pred: (p: Plot) => boolean): number { for (const p of this.plots) if (pred(p)) return p.id; return -1; }
+  // 选满足条件且「闲置最久」的地块（对齐 H5 tillP/plantP 的 sort by idle desc → 轮换最久未管的地块，而非总从 0 号开始）
+  private findPlotByIdle(pred: (p: Plot) => boolean): number {
+    let best = -1, bi = -1;
+    for (const p of this.plots) if (pred(p) && p.idle > bi) { bi = p.idle; best = p.id; }
+    return best;
+  }
   private lowestRes(): ResKey | null {
     const thr: Record<ResKey, number> = { water: 16, eco: 12 }; // 仅水/生态肥（对齐 H5 双池）；种子由 econ.seedStock 接管
     let pick: ResKey | null = null, ratio = 1;
@@ -840,27 +852,30 @@ export class World {
     return n;
   }
 
-  // 播种：已翻耕(tilled)地块种上 chooseCrop 选定作物，消耗 1 批种子单位 seedStock（对齐 H5 plant）
+  // 播种：已翻耕(tilled)地块种上 chooseCrop 选定作物，消耗 1 批种子单位 seedStock（对齐 H5 plant）。
+  // 关键：按「新作物」自身的行距/密度规则(autoPoints)重建种植点 —— 小麦密、玉米疏、辣椒更密… 不再沿用上一茬的布点。
   private plantPlot(plotId: number) {
     const p = this.plots[plotId];
     if (!p || this.econ.seedStock <= 0) return;
+    if (!p.slots.length || !p.slots.every((sl) => sl.phase === 'tilled')) return; // 仅整块已翻耕才播种（避免误伤在长作物）
     const crop = this.chooseCrop();
-    let n = 0;
-    for (const sl of p.slots) {
-      if (sl.phase !== 'tilled') continue;
-      n++;
-      sl.phase = 'grow';
-      sl.crop = crop;
-      sl.growth = 0;
-      sl.fallowMS = this.stress ? 1200 : 2200; // 播种后短暂出苗（裸土→新苗）
-      sl.moist = 6; sl.dry = 0; sl.flood = 0; sl.frost = 0; sl.parch = 0; sl.age = 0;
-    }
-    if (n > 0) {
-      this.econ.seedStock = Math.max(0, this.econ.seedStock - 1); // 一块地耗 1 批种子单位
-      this.ai.plantings++;
-      this.ai.explore = Math.max(0.05, this.ai.explore * 0.96); // 探索率随播种衰减
-      this.ai.last = `🌱 ${plotId + 1} 号地播种「${CROPS[crop].name}」`;
-    }
+    const q = getQuad(plotId);
+    const pts = autoPoints(plotId, crop, q, this.stress ? 3 : 0); // 按新作物密度重排布点
+    p.slots = pts.map((pt) => {
+      const gh = (((Math.round(pt.x * 7.3 + pt.y * 13.1) % 100) + 100) % 100) / 100;
+      const rate = 0.6 + gh * 0.8;
+      return {
+        pt, crop, growth: 0, rate,
+        moist: 8, dry: 0, flood: 0, frost: 0, parch: 0, age: 0,
+        dead: false, deathKind: '' as const, respawnT: 0,
+        fallowMS: this.stress ? 1200 : 2200, phase: 'grow' as const,
+      };
+    });
+    this.dirtyPlots.push(plotId); // 通知渲染层按新布点重建该地块作物精灵
+    this.econ.seedStock = Math.max(0, this.econ.seedStock - 1); // 一块地耗 1 批种子单位
+    this.ai.plantings++;
+    this.ai.explore = Math.max(0.05, this.ai.explore * 0.96); // 探索率随播种衰减
+    this.ai.last = `🌱 ${plotId + 1} 号地播种「${CROPS[crop].name}」`;
   }
 
   // 出售待售库存：按新鲜度 × 市值变现 → 经营资金（行情尖峰套利记入 spikeGain）

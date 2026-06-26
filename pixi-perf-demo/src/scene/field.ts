@@ -264,7 +264,49 @@ export class Field {
     }
   }
 
+  // 重建单个地块的作物精灵：机器人改种不同作物后按新 autoPoints 布点重排（销毁旧精灵→建新精灵，不触碰野草）。
+  private rebindPlotCrops(world: World, plotId: number): void {
+    const keep: SpriteRec[] = [];
+    for (const rec of this.recs) {
+      if (rec.plotId === plotId) {
+        this.cropLayer.removeChild(rec.sprite); rec.sprite.destroy();
+        this.cropLayer.removeChild(rec.sprite2); rec.sprite2.destroy();
+        this.shadowLayer.removeChild(rec.shadow); rec.shadow.destroy();
+      } else keep.push(rec);
+    }
+    this.recs = keep;
+    const p = world.plots[plotId];
+    if (!p) return;
+    const q = getQuad(plotId);
+    const pdepPct = Math.abs(q[2][1] - q[0][1]) || 1;
+    p.slots.forEach((sl, idx) => {
+      const mk = () => {
+        const s = new Sprite(this.atlas.get(`plant_${sl.crop}_s1`));
+        s.anchor.set(0.5, 0.68);
+        s.position.set(pctX(sl.pt.x), pctY(sl.pt.y));
+        s.zIndex = sl.pt.y;
+        this.cropLayer.addChild(s);
+        return s;
+      };
+      const sprite = mk();
+      const sprite2 = mk();
+      this.recs.push({
+        sprite, sprite2, plotId, slotIdx: idx, depth: sl.pt.depth,
+        sizeJit: 0.84 + plantHash(plotId, idx, 11) * 0.34,
+        restAng: (plantHash(plotId, idx, 12) - 0.5) * 16,
+        pdepPct,
+        r1: plantHash(plotId, idx, 1), r2: plantHash(plotId, idx, 2), r3: plantHash(plotId, idx, 3), r4: plantHash(plotId, idx, 4),
+        curLodge: 0, colorVar: makeColorVar(plotId, idx), shadow: this.mkShadow(),
+      });
+    });
+  }
+
   update(world: World, dtMS: number) {
+    // 机器人改种了不同作物的地块：按新作物布点重建该地块作物精灵（不动野草，避免整田重建闪烁）
+    if (world.dirtyPlots.length) {
+      for (const id of world.dirtyPlots) this.rebindPlotCrops(world, id);
+      world.dirtyPlots.length = 0;
+    }
     const wx = world.weather.type as WeatherType;
     const lum = world.toggles.cropRelight
       ? sceneLum(world.tod, wx, world.weatherIntensity())
