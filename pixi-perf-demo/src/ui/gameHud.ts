@@ -46,6 +46,7 @@ export class GameHud {
     this.buildToolbar();
     this.buildResChips();
     this.buildSeedBrush();
+    this.buildConfirmModal();
     this.buildWeatherPill();
     this.buildCodexNav();
     this.buildBuildings();
@@ -327,6 +328,25 @@ export class GameHud {
     this.root.appendChild(bar);
   }
 
+  // ============ 「作物不需要却强行」二次确认弹窗（按需作业 → 强行有肥害/涝害风险）============
+  private buildConfirmModal() {
+    const wrap = E('div', 'position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.34); z-index:60; pointer-events:auto;');
+    const box = E('div', 'width:300px; background:linear-gradient(#f6ecd4,#efe0c0); border:2px solid #b0863f; border-radius:16px; box-shadow:0 12px 30px rgba(0,0,0,.42); padding:16px 18px; text-align:center;');
+    box.append(E('div', 'font-size:15px; font-weight:800; color:#5a431f; margin-bottom:8px;', { text: '⚠️ 作物当前不需要' }));
+    this.r.confirmText = E('div', 'font-size:12.5px; font-weight:600; color:#7a6038; line-height:1.5; margin-bottom:14px;', { text: '' });
+    box.append(this.r.confirmText);
+    const row = E('div', 'display:flex; gap:10px; justify-content:center;');
+    const cancel = E('button', 'flex:1; padding:9px 0; border:none; border-radius:10px; background:#d8cbb0; color:#5a431f; font-size:13px; font-weight:800; cursor:pointer;', { text: '取消' }) as HTMLButtonElement;
+    const ok = E('button', 'flex:1; padding:9px 0; border:none; border-radius:10px; background:linear-gradient(#e0a23a,#c8852a); color:#fff; font-size:13px; font-weight:800; cursor:pointer;', { text: '确定强行' }) as HTMLButtonElement;
+    cancel.onclick = () => this.world.confirmManual(false);
+    ok.onclick = () => this.world.confirmManual(true);
+    row.append(cancel, ok);
+    box.append(row);
+    wrap.append(box);
+    this.r.confirmModal = wrap;
+    this.root.appendChild(wrap);
+  }
+
   // ============ 巡田路径编辑器（SVG 覆盖层：拖节点改路 / 点空白加节点 / 点两节点连断线）============
   private buildPathEditor() {
     const NS = 'http://www.w3.org/2000/svg';
@@ -567,6 +587,12 @@ export class GameHud {
         sb.style.color = on ? '#fff' : '#f0e6d2';
       }
     }
+    // 「不需要却强行」确认弹窗
+    const pc = w.pendingConfirm;
+    this.r.confirmModal.style.display = pc ? 'flex' : 'none';
+    if (pc) this.r.confirmText.textContent = pc.tool === 'water'
+      ? '阴雨/夜间/土壤已湿，暂不需要浇水。强行浇水有「涝害」风险，可能降低作物健康、拖慢生长。确定吗？'
+      : '非生长期或刚施过肥，暂不需要施肥。强行施肥有「肥害」风险，可能灼伤作物、降低健康与生长。确定吗？';
 
     // 灾害预告条 + 让位（面板下移到 124）
     const disaster = isDisaster(w.weather.type);
@@ -621,7 +647,7 @@ export class GameHud {
       this.r.aiTrades.textContent = String(ai.trades);
       this.r.aiSells.textContent = String(ai.sells);
       this.r.aiDeaths.textContent = String(ai.deaths);
-      this.r.aiExplore.textContent = Math.round(ai.explore * 100) + '%';
+      this.r.aiExplore.textContent = Math.round(w.brain.eps * 100) + '%'; // 探索率改读学习大脑 eps（随经验衰减→越学越笃定）
       const e = w.econ;
       const stockN = CROP_KEYS.reduce((s, k) => s + (e.stock[k] || 0), 0);
       const whN = CROP_KEYS.reduce((s, k) => s + (e.wh[k] || 0), 0);
