@@ -213,7 +213,8 @@ export class Field {
       if (wp <= appearAt) { wr.sprite.visible = false; continue; }
       wr.sprite.visible = true;
       const grow = Math.min(1, (wp - appearAt) / 30); // 0..1 该株生长进度
-      const wstage = grow < 0.34 ? 0 : grow < 0.7 ? 1 : 2; // 幼苗 / 生长 / 成熟
+      const n = wr.stages.length;                         // 各类阶段数可不同（weed_8 为 4 阶段含开花）
+      const wstage = Math.min(n - 1, Math.floor(grow * n)); // 按阶段数均分生长进度，逐阶换贴图
       if (wr.cur !== wstage) { wr.sprite.texture = wr.stages[wstage]; wr.cur = wstage; }
       // 屏上高度连续(0.42→1.0×targetH)，除以当前阶段贴图实高 → 换阶段不跳高，只换形态细节
       const h = wr.targetH * (0.42 + 0.58 * grow);

@@ -61,10 +61,10 @@ async function boot() {
   const atlas = new PlantAtlas();
   await atlas.build(app.renderer);
 
-  // 写实杂草贴图：只用「有完整生长过程」的三类（幼苗→生长→成熟）；其余单图类型待用户补全分阶段后再全量启用。
-  // 每类按阶段加载为 [幼苗, 生长, 成熟]；缺某张则用同类已加载贴图兜底，整类全失败则丢弃该类（不影响主流程）。
+  // 写实杂草贴图：只用「有完整生长过程」的三类；其余单图类型待用户补全分阶段后再全量启用。
+  // 每类按阶段顺序加载（阶段数可不同，weed_8 为 4 阶段含开花）；缺某张则用同类已加载贴图兜底，整类全失败则丢弃。
   const WEED_STAGE_FILES: string[][] = [
-    ['weed_1_baby', 'weed_1_grow', 'weed_1'],
+    ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], // 毛茛类：幼苗→抽茎→开黄花→结实枯黄
     ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'],
     ['weed_10_baby', 'weed_10_baby_grow', 'weed_10_mature'],
   ];
