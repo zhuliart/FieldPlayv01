@@ -64,25 +64,28 @@ async function boot() {
 
   // 写实杂草贴图：只用「有完整生长过程」的三类；其余单图类型待用户补全分阶段后再全量启用。
   // 每类按阶段顺序加载（阶段数可不同，weed_8 为 4 阶段含开花）；缺某张则用同类已加载贴图兜底，整类全失败则丢弃。
-  const WEED_STAGE_FILES: string[][] = [
-    ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], // 毛茛类：幼苗→抽茎→开黄花→结实枯黄
-    ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'],
-    ['weed_10_baby', 'weed_10_baby_grow', 'weed_10_mature'],
-    ['weed_11_baby', 'weed_11_grow', 'weed_11_flower', 'weed_11_mature'], // 鬼针草类：幼苗→抽茎→开白花→结刺果
+  // habitat：both=田/野皆有，wild=主要野地（田内只长 both 类，野地长全部）。开花阔叶类(毛茛/鬼针草)田野皆常见。
+  const WEED_DEFS: { files: string[]; habitat: 'both' | 'wild' }[] = [
+    { files: ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], habitat: 'both' }, // 毛茛类：幼苗→抽茎→开黄花→结实枯黄
+    { files: ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'], habitat: 'wild' },                   // 主要野地
+    { files: ['weed_10_baby', 'weed_10_baby_grow', 'weed_10_mature'], habitat: 'wild' },           // 主要野地
+    { files: ['weed_11_baby', 'weed_11_grow', 'weed_11_flower', 'weed_11_mature'], habitat: 'both' }, // 鬼针草类：幼苗→抽茎→开白花→结刺果
   ];
-  const weedTypes = (await Promise.all(
-    WEED_STAGE_FILES.map(async (files) => {
-      const texs = await Promise.all(files.map((f) => Assets.load<Texture>(av(`assets/${f}.png`)).catch(() => null)));
+  const weedLoaded = (await Promise.all(
+    WEED_DEFS.map(async (def) => {
+      const texs = await Promise.all(def.files.map((f) => Assets.load<Texture>(av(`assets/${f}.png`)).catch(() => null)));
       const present = texs.filter((t): t is Texture => !!t);
       if (present.length === 0) return null;
-      return texs.map((t) => t ?? present[present.length - 1]) as Texture[];
+      return { stages: texs.map((t) => t ?? present[present.length - 1]) as Texture[], habitat: def.habitat };
     }),
-  )).filter((t): t is Texture[] => !!t);
+  )).filter((x): x is { stages: Texture[]; habitat: 'both' | 'wild' } => !!x);
+  const weedTypes = weedLoaded.map((x) => x.stages);
+  const weedHabitats = weedLoaded.map((x) => x.habitat);
 
   // —— 场景图层 ——
   const background = new Background();
   const weatherOverlay = new WeatherOverlay();
-  const field = new Field(atlas, weedTypes, (plotId) => {
+  const field = new Field(atlas, weedTypes, weedHabitats, (plotId) => {
     if (world.mode === 'manual') world.manualAction(plotId);
     else world.burst(plotId, 'water');
   });
