@@ -44,6 +44,16 @@ export const CROPS: Record<CropKey, CropDef> = {
 
 export const CROP_KEYS: CropKey[] = ['tomato', 'lettuce', 'corn', 'chili', 'wheat'];
 
+// 种植考核·时机：各作物适播季节(0春1夏2秋3冬)。种对季节→时机分高、幼苗健康；越偏离→评分越低。
+export const CROP_SEASON: Record<CropKey, number[]> = {
+  tomato: [0, 1], // 春夏
+  lettuce: [0, 2], // 春秋（喜凉）
+  corn: [0, 1], // 春夏
+  chili: [1], // 夏
+  wheat: [2, 3], // 秋冬（冬小麦）
+};
+export const SEASON_NAME = ['春', '夏', '秋', '冬'];
+
 // 田间植株渲染参数（移植自原型）：
 // 株高占地块纵深的系数（高秆玉米最大、番茄次之，其余默认 0.42）
 // 株高占地块纵深的系数：玉米最高最大，番茄次之，辣椒再次，生菜最小（用户调校）

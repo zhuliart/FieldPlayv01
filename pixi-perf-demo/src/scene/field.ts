@@ -1,6 +1,6 @@
 import { Container, Sprite, Graphics, Texture, RenderTexture, type Renderer } from 'pixi.js';
 import { PLANT_SIZE, PLANT_SIZE_DEFAULT, CROP_BOTTOM } from '../data/crops';
-import { STAGE_H } from '../data/baseCorners';
+import { STAGE_H, STAGE_W } from '../data/baseCorners';
 import { sceneLum, type WeatherType } from '../data/scenes';
 import { getQuad, plantHash, pctX, pctY } from '../sim/layout';
 import { isBgVeg } from '../data/vegMask';
@@ -78,7 +78,7 @@ export class Field {
   private lastShadowAlpha = 0.3; // 当前接地阴影强度（随天气/昼夜），供全量光影冠层投影同步浓度
   private actor: Container | null = null; // 机器人机身（放进作物层做深度排序；重建时需保留）
 
-  constructor(private atlas: PlantAtlas, kinds: WeedKind[], private onPlotTap: (plotId: number) => void) {
+  constructor(private atlas: PlantAtlas, kinds: WeedKind[], private onPlotTap: (plotId: number, xPct: number, yPct: number) => void) {
     this.kinds = kinds;
     this.fieldKinds = kinds.map((_, i) => i).filter((i) => kinds[i].inField);
     this.wildKinds = kinds.map((_, i) => i).filter((i) => kinds[i].inWild);
@@ -126,7 +126,7 @@ export class Field {
       g.poly(pts).fill({ color: 0xffffff, alpha: 0.0001 });
       g.eventMode = 'static';
       g.cursor = 'pointer';
-      g.on('pointertap', () => this.onPlotTap(id));
+      g.on('pointertap', (e) => { const lp = e.getLocalPosition(this.hitLayer); this.onPlotTap(id, (lp.x / STAGE_W) * 100, (lp.y / STAGE_H) * 100); });
       this.hitLayer.addChild(g);
     }
   }

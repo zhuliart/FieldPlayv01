@@ -47,6 +47,7 @@ export class GameHud {
     this.buildResChips();
     this.buildSeedBrush();
     this.buildConfirmModal();
+    this.buildSeasonChip();
     this.buildWeatherPill();
     this.buildCodexNav();
     this.buildBuildings();
@@ -319,13 +320,25 @@ export class GameHud {
     const bar = E('div', 'position:absolute; bottom:62px; left:50%; transform:translateX(-50%); display:none; align-items:flex-end; gap:7px; background:linear-gradient(rgba(40,28,14,.74),rgba(40,28,14,.58)); border-radius:14px; padding:6px 10px; box-shadow:0 4px 12px rgba(0,0,0,.3); pointer-events:auto;');
     for (const k of CROP_KEYS) {
       const b = E('button', 'display:flex; flex-direction:column; align-items:center; gap:1px; border:none; border-radius:10px; padding:5px 8px; cursor:pointer; background:transparent; color:#f0e6d2; transition:.12s;') as HTMLButtonElement;
-      b.append(E('span', 'font-size:20px; line-height:1;', { text: CROP_ICON[k] }), E('span', 'font-size:10px; font-weight:800; white-space:nowrap;', { text: `${CROP_CN[k]} ${CROPS[k].seed}🪙` }));
+      const lab = E('span', 'font-size:10px; font-weight:800; white-space:nowrap;', { text: `${CROP_CN[k]} ${CROPS[k].seed}🪙` });
+      this.r['seedlab_' + k] = lab;
+      b.append(E('span', 'font-size:20px; line-height:1;', { text: CROP_ICON[k] }), lab);
       b.onclick = () => { this.world.manualSeed = k; this.toast(`选种「${CROP_CN[k]}」· 点空地播种`); };
       this.r['seed_' + k] = b;
       bar.appendChild(b);
     }
     this.r.seedBrush = bar;
     this.root.appendChild(bar);
+  }
+
+  // ============ 季节牌（右下角，常驻）：种植时机考核的基准 ============
+  private buildSeasonChip() {
+    const chip = E('div', 'position:absolute; bottom:16px; right:14px; display:flex; align-items:center; gap:5px; background:linear-gradient(rgba(74,116,44,.9),rgba(50,86,30,.9)); border:1.5px solid rgba(176,134,63,.5); border-radius:13px; padding:5px 11px; font-size:12.5px; font-weight:800; color:#eaf6e0; box-shadow:0 4px 11px rgba(0,0,0,.25); pointer-events:auto;');
+    chip.append(E('span', 'font-size:14px;', { text: '🗓️' }));
+    this.r.seasonText = E('span', '', { text: '春季', cls: 'fp-num' });
+    chip.append(this.r.seasonText);
+    this.r.seasonChip = chip;
+    this.root.appendChild(chip);
   }
 
   // ============ 「作物不需要却强行」二次确认弹窗（按需作业 → 强行有肥害/涝害风险）============
@@ -585,8 +598,12 @@ export class GameHud {
         const on = w.manualSeed === k;
         sb.style.background = on ? 'linear-gradient(#7ec943,#54992c)' : 'transparent';
         sb.style.color = on ? '#fff' : '#f0e6d2';
+        const fit = w.seasonFit(k); // 应季作物高亮、非应季淡化（种植时机考核）
+        sb.style.opacity = fit >= 1 ? '1' : '0.5';
+        this.r['seedlab_' + k].textContent = `${CROP_CN[k]} ${CROPS[k].seed}🪙${fit >= 1 ? ' ✓应季' : ''}`;
       }
     }
+    this.r.seasonText.textContent = w.seasonName() + '季';
     // 「不需要却强行」确认弹窗
     const pc = w.pendingConfirm;
     this.r.confirmModal.style.display = pc ? 'flex' : 'none';

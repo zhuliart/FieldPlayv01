@@ -93,9 +93,11 @@ async function boot() {
   // —— 场景图层 ——
   const background = new Background();
   const weatherOverlay = new WeatherOverlay();
-  const field = new Field(atlas, weedKinds, (plotId) => {
-    if (world.mode === 'manual') world.manualAction(plotId);
-    else world.burst(plotId, 'water');
+  const field = new Field(atlas, weedKinds, (plotId, xPct, yPct) => {
+    if (world.mode === 'manual') {
+      if (world.manualTool === 'plant') world.manualPlantPoint(plotId, xPct, yPct); // 种植工具：在落点逐点自定义种植
+      else world.manualAction(plotId);
+    } else world.burst(plotId, 'water');
   });
   field.buildHitAreas();
   field.rebuild(world);

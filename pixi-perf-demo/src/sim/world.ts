@@ -1,4 +1,4 @@
-import { CROPS, CROP_KEYS, GROW_SEC, type CropKey } from '../data/crops';
+import { CROPS, CROP_KEYS, GROW_SEC, CROP_SEASON, SEASON_NAME, type CropKey } from '../data/crops';
 import { type WeatherType, wxIntensity, isDisaster } from '../data/scenes';
 import { MAP } from '../data/tokens';
 import { autoPoints, getQuad, quadCenterPct, type PlantPoint } from './layout';
@@ -20,6 +20,7 @@ export interface Slot {
   respawnT: number; // 死亡后重生计时(ms)，保持田间持续繁忙（仅手动模式）
   fallowMS: number; // 收获后翻耕/休耕计时(ms)：>0 时显示裸土翻耕、暂不生长，归零后新苗才开始长
   health: number; // 健康值 0..1：肥害/涝害/灾害降低 → 拖慢生长；随时间缓慢恢复
+  plantQual: number; // 种植考核分 0.2..1：行距评分 × 应季时机（持久）→ 影响生长速度与收获量
   // 托管轮作生命周期：grow 生长中 / empty 收割后空置(待翻耕) / tilled 已翻耕(待播种)。手动模式恒为 grow。
   phase: 'grow' | 'empty' | 'tilled';
 }
@@ -163,6 +164,7 @@ export interface BrainState {
   wUrgency: number; // 紧迫度权重
   wPower: number; // 耗电(负向)权重
   kind: Record<string, number>; // 各动作类型的学习偏置(经验价值)
+  densBias: number; // 学习的种植密度偏置(-3..3)：按收获质量调，过密则减、有余则增 → 学最优行距
   eps: number; // 探索率(随经验衰减)
   steps: number; // 决策步数
   netReward: number; // 累计净回报
@@ -210,6 +212,7 @@ const WX_OFFLINE_MSG: Partial<Record<WeatherType, string>> = {
 
 export class World {
   tod = 0.34; // 初始上午（原型默认）；live 模式下每帧锁农场当地时间
+  calDay = 80; // 合成日历(0..359，初始≈春)：加速模式推进；live 模式季节按农场真实月份
   todAuto = true;
   todSpeed = 0.0; // 每毫秒推进量（main 里按 dayLengthSec 设定，仅加速模式生效）
 
@@ -395,7 +398,7 @@ export class World {
         return {
           pt, crop, growth: stage * 100, rate,
           moist: stage < 4 ? 5 : 0, dry: 0, flood: 0, frost: 0, parch: 0, age: 0,
-          dead: false, deathKind: '' as const, respawnT: 0, fallowMS: 0, health: 1, phase: 'grow' as const,
+          dead: false, deathKind: '' as const, respawnT: 0, fallowMS: 0, health: 1, plantQual: 1, phase: 'grow' as const,
         };
       });
       const weeds = i % 4 === 0 ? 2 : i % 3 === 0 ? 1 : 0;
@@ -452,6 +455,7 @@ export class World {
       this.tod = (this.tod + this.todSpeed * dtMS) % 1; // 加速：合成演示
       if (this.tod < 0) this.tod += 1;
     }
+    if (!this.live) this.calDay = (this.calDay + dtMS * 0.0003) % 360; // 加速：合成日历推进（一年≈20分钟，四季流转）
 
     // —— 慢 tick：市场 / 杂草 / 闲置 / AI 经济（移植原型 2.6s tick 节奏）——
     this.slowAcc += dtMS;
@@ -487,7 +491,7 @@ export class World {
           // 每作物按自身生长周期(GROW_SEC 秒)连续推进：growth 0→400；各株再乘个体 rate(0.6~1.4) → 平滑爬升、每株不同
           const gPerMs = (400 / ((GROW_SEC[sl.crop] || 130) * 1000)) * stressMul;
           const waterFactor = sl.dry > 0 ? 0.25 : 1; // 缺水拖慢生长
-          sl.growth += gPerMs * dtMS * sl.rate * (1 - wInt * (1 - stall) * 0.6) * waterFactor * weedFactor * malignFactor * (0.5 + 0.5 * sl.health);
+          sl.growth += gPerMs * dtMS * sl.rate * (1 - wInt * (1 - stall) * 0.6) * waterFactor * weedFactor * malignFactor * (0.5 + 0.5 * sl.health) * sl.plantQual;
           if (sl.growth >= 400) sl.growth = 400;
         }
       }
@@ -659,6 +663,84 @@ export class World {
   }
   // 种子批实时价（随种子行情 seedMkt 浮动）
   seedBatchCost(): number { return Math.round(SEED_BASE * this.seedMkt); }
+
+  // ===== 种植考核：四季 + 行距/时机评分 =====
+  // 当前季节(0春1夏2秋3冬)：live 按农场真实月份，加速按合成日历
+  season(): number {
+    if (this.live) {
+      const n = new Date();
+      const m = new Date(n.getTime() + n.getTimezoneOffset() * 60000 + 8 * 3600000).getMonth(); // 上海时月份 0-11
+      return (m === 11 || m <= 1) ? 3 : m <= 4 ? 0 : m <= 7 ? 1 : 2; // 冬(12/1/2) 春(3-5) 夏(6-8) 秋(9-11)
+    }
+    return Math.min(3, Math.floor((this.calDay / 360) * 4));
+  }
+  seasonName(): string { return SEASON_NAME[this.season()]; }
+  // 应季契合度(0.4..1)：当前季在适播季→1；差 1 季→0.7；差 2 季→0.4
+  seasonFit(crop: CropKey): number {
+    const s = this.season();
+    if (CROP_SEASON[crop].includes(s)) return 1;
+    let dmin = 2;
+    for (const i of CROP_SEASON[crop]) { const d = Math.min(Math.abs(s - i), 4 - Math.abs(s - i)); if (d < dmin) dmin = d; }
+    return Math.max(0.4, 1 - dmin * 0.3);
+  }
+  // 作物理想株距（从 autoPoints 理想密度反推平均最近邻距，缓存）
+  private idealGapCache: Partial<Record<CropKey, number>> = {};
+  private idealGap(crop: CropKey): number {
+    const c = this.idealGapCache[crop]; if (c != null) return c;
+    const pts = autoPoints(6, crop, getQuad(6), 0);
+    let sum = 0, cnt = 0;
+    for (let i = 0; i < pts.length; i++) {
+      let nn = Infinity;
+      for (let j = 0; j < pts.length; j++) { if (i === j) continue; const d = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y); if (d < nn) nn = d; }
+      if (nn < Infinity) { sum += nn; cnt++; }
+    }
+    const g = cnt > 0 ? sum / cnt : 3;
+    this.idealGapCache[crop] = g;
+    return g;
+  }
+  // 评估整块种植考核 → 各活株 plantQual = 行距评分 × 应季时机。混种时邻居含异种(物理拥挤)；过密→分低。
+  private assessPlanting(p: Plot) {
+    const grows = p.slots.filter((sl) => sl.phase === 'grow' && !sl.dead);
+    for (const sl of grows) {
+      let nn = Infinity;
+      for (const o of grows) { if (o === sl) continue; const d = Math.hypot(sl.pt.x - o.pt.x, sl.pt.y - o.pt.y); if (d < nn) nn = d; }
+      const ideal = this.idealGap(sl.crop);
+      const space = nn === Infinity ? 1 : (nn >= ideal ? 1 : Math.max(0.3, 0.3 + 0.7 * (nn / ideal))); // 过密线性惩罚至 0.3
+      sl.plantQual = +(Math.max(0.2, space * this.seasonFit(sl.crop))).toFixed(3);
+    }
+  }
+
+  // 手动逐点种植：在地块落点(% 坐标)撒一小簇当前选种(可混种)，按株扣金币、落点即重评行距 → 玩家自定义种多密/种什么/种哪里
+  manualPlantPoint(plotId: number, xPct: number, yPct: number) {
+    const p = this.plots[plotId]; if (!p) return;
+    const crop = this.manualSeed;
+    const per = Math.max(2, Math.round(CROPS[crop].seed / 14));
+    const N = 5; // 每次落一小簇（便于成片，又保留自定义密度）
+    if (this.player.coins < per * N) return this.pushToast(`🪙 金币不足（每簇约 ${per * N}🪙）`);
+    const q = getQuad(plotId);
+    const top = q[0][1], pdep = Math.abs(q[2][1] - q[0][1]) || 1;
+    const ig = this.idealGap(crop);
+    p.slots = p.slots.filter((sl) => sl.phase === 'grow' && !sl.dead); // 清掉空地/枯株，保留在长作物(支持混种)
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * Math.PI * 2, r = i === 0 ? 0 : ig * (0.5 + 0.4 * ((i * 7) % 3));
+      const x = Math.max(q[3][0], Math.min(q[1][0], xPct + Math.cos(a) * r));
+      const y = Math.max(top + 0.3, Math.min(top + pdep - 0.3, yPct + Math.sin(a) * r * 0.6));
+      const depth = Math.max(0, Math.min(1, (y - top) / pdep));
+      const gh = (((Math.round(x * 7.3 + y * 13.1) % 100) + 100) % 100) / 100;
+      p.slots.push({
+        pt: { x, y, depth }, crop, growth: 0, rate: 0.6 + gh * 0.8,
+        moist: 8, dry: 0, flood: 0, frost: 0, parch: 0, age: 0,
+        dead: false, deathKind: '' as const, respawnT: 0, fallowMS: this.stress ? 1200 : 2200,
+        health: 1, plantQual: 1, phase: 'grow' as const,
+      });
+    }
+    this.player.coins -= per * N;
+    p.weeds = 0; p.weedProg = 0;
+    this.assessPlanting(p); // 落点即重评（过密→各株质量下降）
+    this.dirtyPlots.push(plotId);
+    const fit = this.seasonFit(crop);
+    this.pushToast(fit >= 1 ? `🌱 种下「${CROPS[crop].name}」×${N}（应季✓）` : `🌱 种下「${CROPS[crop].name}」×${N}（非适播季·${this.seasonName()}，长势打折）`);
+  }
 
   private startTask(task: RobotTask, dest: { left: number; top: number }) {
     this.rTask = task;
@@ -921,31 +1003,37 @@ export class World {
     if (this.mode !== 'auto') return 0;
     const p = this.plots[plotId];
     if (!p) return 0;
-    const cropHarvested = p.slots.find((sl) => sl.phase === 'grow' && !sl.dead && sl.growth >= 400)?.crop;
-    let n = 0; // 成熟株数（视觉）
+    if (STOCK_CAP - this.cropCount(this.econ.stock) <= 0) return 0; // 满载收不进 → 先清货
+    // 按作物分组成熟株（支持混种）：株数 + 累计种植质量(plantQual×健康)
+    const byCrop = new Map<CropKey, { n: number; q: number }>();
+    let totalN = 0;
     for (const sl of p.slots) {
       if (sl.phase !== 'grow' || sl.dead || sl.growth < 400) continue;
-      n++;
-      sl.phase = 'empty'; // 收割后空出地块，待翻耕→播种（撂荒计入闲置；不再原地秒复种）
-      sl.fallowMS = 0;
+      const g = byCrop.get(sl.crop) || { n: 0, q: 0 };
+      g.n++; g.q += sl.plantQual * (0.5 + 0.5 * sl.health);
+      byCrop.set(sl.crop, g);
+      sl.phase = 'empty'; sl.fallowMS = 0; totalN++;
     }
-    if (n > 0 && cropHarvested) {
-      const units = Math.min(9, n, STOCK_CAP - this.cropCount(this.econ.stock)); // 封顶 9，且不超过携带上限剩余（满载收不进 → 学习先清货）
-      if (units <= 0) return n;
-      const price = this.priceOf(cropHarvested);
-      this.econ.stock[cropHarvested] = (this.econ.stock[cropHarvested] || 0) + units;
-      // 新入库视为最新鲜(1.0)，与原有库存按件数加权平均新鲜度
+    if (totalN === 0) return 0;
+    let totUnits = 0;
+    for (const [crop, g] of byCrop) {
+      const room = STOCK_CAP - this.cropCount(this.econ.stock); if (room <= 0) break;
+      const avgQ = g.q / g.n; // 平均种植质量 → 产量缩放（行距/应季差 → 产量低）
+      const units = Math.min(room, Math.max(1, Math.round(Math.min(9, g.n) * avgQ)));
+      this.econ.stock[crop] = (this.econ.stock[crop] || 0) + units;
       const had = this.cropCount(this.econ.stock) - units;
       this.econ.fresh = had > 0 ? (had * this.econ.fresh + units * 1) / (had + units) : 1;
-      this.res.eco = Math.min(RES_MAX.eco, this.res.eco + 5); // 对齐 H5：收获回补生态肥
-      // Q 学习：奖励 = 实现毛利（售价 − 种子成本），α=0.25（对齐 H5 收获更新；死亡惩罚仍用 0.3）
-      const margin = price - CROPS[cropHarvested].seed;
-      this.ai.q[cropHarvested] += 0.25 * (margin - this.ai.q[cropHarvested]);
+      this.res.eco = Math.min(RES_MAX.eco, this.res.eco + 5);
+      this.ai.q[crop] += 0.25 * ((this.priceOf(crop) - CROPS[crop].seed) - this.ai.q[crop]);
       this.ai.harvests += units;
-      this.ai.trades++;
-      this.ai.last = `🧺 ${plotId + 1} 号地收获 ×${units}（入待售库存，待择机出售）`;
+      // 学最优行距：质量低(过密)→种稀；质量满且株多→可更密
+      if (avgQ < 0.85) this.brain.densBias = +Math.max(-3, this.brain.densBias - 0.15).toFixed(3);
+      else if (avgQ > 0.97) this.brain.densBias = +Math.min(3, this.brain.densBias + 0.08).toFixed(3);
+      totUnits += units;
     }
-    return n;
+    this.ai.trades++;
+    this.ai.last = `🧺 ${plotId + 1} 号地收获 ×${totUnits}（种植质量影响产量）`;
+    return totalN;
   }
 
   // 播种：已翻耕(tilled)地块种上 chooseCrop 选定作物，消耗 1 批种子单位 seedStock（对齐 H5 plant）。
@@ -956,7 +1044,7 @@ export class World {
     if (!p.slots.length || !p.slots.every((sl) => sl.phase === 'tilled')) return; // 仅整块已翻耕才播种（避免误伤在长作物）
     const crop = this.chooseCrop();
     const q = getQuad(plotId);
-    const pts = autoPoints(plotId, crop, q, this.stress ? 3 : 0); // 按新作物密度重排布点
+    const pts = autoPoints(plotId, crop, q, (this.stress ? 3 : 0) + Math.round(this.brain.densBias)); // 学习的种植密度偏置(densBias) → 学最优行距
     p.slots = pts.map((pt) => {
       const gh = (((Math.round(pt.x * 7.3 + pt.y * 13.1) % 100) + 100) % 100) / 100;
       const rate = 0.6 + gh * 0.8;
@@ -964,9 +1052,10 @@ export class World {
         pt, crop, growth: 0, rate,
         moist: 8, dry: 0, flood: 0, frost: 0, parch: 0, age: 0,
         dead: false, deathKind: '' as const, respawnT: 0,
-        fallowMS: this.stress ? 1200 : 2200, health: 1, phase: 'grow' as const,
+        fallowMS: this.stress ? 1200 : 2200, health: 1, plantQual: 1, phase: 'grow' as const,
       };
     });
+    this.assessPlanting(p); // 种植考核：行距 × 应季 → 各株 plantQual
     this.dirtyPlots.push(plotId); // 通知渲染层按新布点重建该地块作物精灵
     this.econ.seedStock = Math.max(0, this.econ.seedStock - 1); // 一块地耗 1 批种子单位
     this.ai.plantings++;
@@ -1420,17 +1509,25 @@ export class World {
   // 手动收获：成熟株卖出得金币 + 回补少量生态肥；地块空出(待翻耕→播种)，给手动玩家完整轮作
   private manualHarvest(plotId: number): number {
     const p = this.plots[plotId]; if (!p) return 0;
-    const crop = p.slots.find((sl) => sl.phase === 'grow' && !sl.dead && sl.growth >= 400)?.crop;
-    let n = 0;
-    for (const sl of p.slots) if (sl.phase === 'grow' && !sl.dead && sl.growth >= 400) { n++; sl.phase = 'empty'; }
-    if (n > 0 && crop) {
-      const units = Math.min(9, n);
-      const gain = Math.round(units * this.priceOf(crop));
-      this.player.coins += gain;
-      this.player.eco = Math.min(400, this.player.eco + units * 2); // 收获回补少量生态肥（对齐 H5 +eco）
-      this.pushToast(`🧺 收获「${CROPS[crop].name}」×${units} 卖得 +${gain}🪙`);
+    const byCrop = new Map<CropKey, { n: number; q: number }>();
+    let totalN = 0;
+    for (const sl of p.slots) {
+      if (sl.phase !== 'grow' || sl.dead || sl.growth < 400) continue;
+      const g = byCrop.get(sl.crop) || { n: 0, q: 0 };
+      g.n++; g.q += sl.plantQual * (0.5 + 0.5 * sl.health);
+      byCrop.set(sl.crop, g);
+      sl.phase = 'empty'; totalN++;
     }
-    return n;
+    if (totalN === 0) return 0;
+    let coins = 0, units = 0;
+    for (const [crop, g] of byCrop) {
+      const u = Math.max(1, Math.round(Math.min(9, g.n) * (g.q / g.n))); // 产量按种植质量缩放
+      coins += Math.round(u * this.priceOf(crop)); units += u;
+      this.player.eco = Math.min(400, this.player.eco + u * 2);
+    }
+    this.player.coins += coins;
+    this.pushToast(`🧺 收获 ×${units} 卖得 +${coins}🪙（种植质量影响产量）`);
+    return totalN;
   }
 
   // 手动播种：空地/已翻耕地块种下当前选种(manualSeed)，扣金币(种子成本)，按作物密度布点(autoPoints)
@@ -1450,10 +1547,11 @@ export class World {
         pt, crop, growth: 0, rate,
         moist: 8, dry: 0, flood: 0, frost: 0, parch: 0, age: 0,
         dead: false, deathKind: '' as const, respawnT: 0,
-        fallowMS: this.stress ? 1200 : 2200, health: 1, phase: 'grow' as const,
+        fallowMS: this.stress ? 1200 : 2200, health: 1, plantQual: 1, phase: 'grow' as const,
       };
     });
     p.weeds = 0; p.weedProg = 0; // 播种即整地清杂草
+    this.assessPlanting(p); // 种植考核：行距 × 应季 → 各株 plantQual
     this.dirtyPlots.push(plotId);
     this.pushToast(`🌱 播种「${CROPS[crop].name}」(-${cost}🪙)`);
   }
@@ -1531,7 +1629,7 @@ function freshPlayer(): PlayerRes {
 }
 
 function freshBrain(): BrainState {
-  return { wValue: 1, wUrgency: 1.1, wPower: 0.7, kind: {}, eps: 0.22, steps: 0, netReward: 0 };
+  return { wValue: 1, wUrgency: 1.1, wPower: 0.7, kind: {}, densBias: 0, eps: 0.22, steps: 0, netReward: 0 };
 }
 
 // 数值 clamp + 三位小数（折损率/仓储费均值回归用）
