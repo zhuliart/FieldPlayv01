@@ -145,6 +145,7 @@ export class Hud {
     body.appendChild(toggleRow('🌗 昼夜 tint', tg.dayTint, (v) => (tg.dayTint = v)));
     body.appendChild(toggleRow('🌿 杂草/状态叠加', tg.overlays, (v) => (tg.overlays = v)));
     body.appendChild(toggleRow('🎨 作物重打光', tg.cropRelight, (v) => (tg.cropRelight = v)));
+    body.appendChild(toggleRow('🌑 作物全量光影', tg.cropFullShadow, (v) => (tg.cropFullShadow = v)));
 
     // —— 光池混合模式 ——
     const blendRow = document.createElement('label');
@@ -257,7 +258,7 @@ function toggleRow(label: string, checked: boolean, onChange: (v: boolean) => vo
   // data-toggle 用于切档后回灌；映射到 toggles 键
   const map: Record<string, string> = {
     车灯光池: 'lightPool', 背景交叉淡入: 'bgFade', '浇水/施肥粒子': 'particles',
-    '昼夜 tint': 'dayTint', '杂草/状态叠加': 'overlays', 作物重打光: 'cropRelight',
+    '昼夜 tint': 'dayTint', '杂草/状态叠加': 'overlays', 作物重打光: 'cropRelight', 作物全量光影: 'cropFullShadow',
   };
   c.dataset.toggle = map[key] || '';
   row.appendChild(c);

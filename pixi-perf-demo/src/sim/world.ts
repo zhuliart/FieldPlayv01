@@ -75,6 +75,7 @@ export interface Toggles {
   dayTint: boolean;
   overlays: boolean;
   cropRelight: boolean;
+  cropFullShadow: boolean; // 作物全量光影(RT冠层投影,较重) ↔ 关=轻投影(每株接地阴影)
 }
 
 export interface Burst {
@@ -184,6 +185,7 @@ export class World {
     dayTint: true,
     overlays: true,
     cropRelight: true,
+    cropFullShadow: true,
   };
 
   // 本帧产生的粒子爆发事件（renderer 消费后清空）

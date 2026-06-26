@@ -1,4 +1,4 @@
-import { Application, Assets, Container, RenderTexture, Sprite, ColorMatrixFilter, Texture } from 'pixi.js';
+import { Application, Assets, Container, RenderTexture, Sprite, ColorMatrixFilter, BlurFilter, Texture } from 'pixi.js';
 import { STAGE_W, STAGE_H } from './data/baseCorners';
 import { installFitBoard } from './core/stage';
 import { StatsMeter } from './core/stats';
@@ -122,9 +122,20 @@ async function boot() {
   enhance.eventMode = 'none';
   enhance.mask = robot.lightMask;    // 只在机器人光照遮罩(柔边+噪点)内显示增强
 
-  // z 序（低→高）：背景 → 地面状态/杂草 → 作物(+机身按y深度排序) → 被照对象增强层 → 灯遮罩 → 昼夜tint(空) → 星空 → 粒子
+  // —— 作物全量光影（RT 冠层投影）——
+  // 把作物层整体渲到 RT，向右下偏移+压黑+模糊后叠在作物之下：上层叶片剪影落到下层叶片/地面，
+  // 密集处底部累积最深(顶亮底暗) → 解决密集作物"只有根部投影、像悬浮"。关则回退每株轻投影。
+  const cropShadowRT = RenderTexture.create({ width: STAGE_W, height: STAGE_H, resolution: Math.min(DPR, 2) });
+  const cropShadowSprite = new Sprite(cropShadowRT);
+  cropShadowSprite.tint = 0x000000;        // 压成黑色冠层剪影
+  cropShadowSprite.position.set(8, 16);    // 月在左上 → 冠层投影向右下偏移
+  cropShadowSprite.filters = [new BlurFilter({ strength: 4, quality: 2 })]; // 柔化成投影
+  cropShadowSprite.eventMode = 'none';
+
+  // z 序（低→高）：背景 → 地面状态/杂草 → 作物冠层投影 → 作物(+机身按y深度排序) → 被照对象增强层 → 灯遮罩 → 昼夜tint(空) → 星空 → 粒子
   app.stage.addChild(background.view);
   app.stage.addChild(weatherOverlay.view);
+  app.stage.addChild(cropShadowSprite); // 作物冠层投影(全量光影模式)：在作物之下、地面之上
   app.stage.addChild(field.view);
   field.addActor(robot.bodyView); // 机身放进作物层，按 y 纵深排序 → 走到高作物后会被其遮挡（真实 2.5D 前后关系）
   app.stage.addChild(enhance);
@@ -209,6 +220,15 @@ async function boot() {
     weatherOverlay.update(world, dtMS);
     field.update(world, dtMS);
     robot.update(world, dtMS);
+
+    // 作物全量光影：开 → 把作物层渲到 RT 做冠层投影(关每株轻投影避免重复)；关 → 用每株接地轻投影
+    const fullShadow = world.toggles.cropFullShadow;
+    field.setLightShadows(!fullShadow);
+    cropShadowSprite.visible = fullShadow;
+    if (fullShadow) {
+      field.renderCanopyTo(app.renderer, cropShadowRT);
+      cropShadowSprite.alpha = Math.min(0.66, field.shadowStrength * 1.2);
+    }
 
     // 夜间「被照对象增强」：把当前场景(背景+天气+作物)采样进 RT，供 enhance 层透过光照遮罩显示增强版。
     // 仅夜间(light>0.04)且机器人在场时启用 → 白天/隐藏时关闭，零额外开销。

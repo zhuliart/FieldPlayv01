@@ -1,4 +1,4 @@
-import { Container, Sprite, Graphics, Texture } from 'pixi.js';
+import { Container, Sprite, Graphics, Texture, RenderTexture, type Renderer } from 'pixi.js';
 import { PLANT_SIZE, PLANT_SIZE_DEFAULT, CROP_BOTTOM } from '../data/crops';
 import { STAGE_H } from '../data/baseCorners';
 import { sceneLum, type WeatherType } from '../data/scenes';
@@ -75,6 +75,7 @@ export class Field {
   private wildRecs: { sprite: Sprite; shadow: Sprite; kind: WeedKind; onPath: boolean; bx: number; by: number; sizeJit: number; colorVar: number; restAng: number; growMul: number; cur: number; life: number; phase: number; hold: number; wither: number; lodge: number; pressed: boolean }[] = [];
   private roadNodes: { left: number; top: number }[] = []; // 供野草异地重生时判定 onPath
   private roadEdges: [number, number][] = [];
+  private lastShadowAlpha = 0.3; // 当前接地阴影强度（随天气/昼夜），供全量光影冠层投影同步浓度
   private actor: Container | null = null; // 机器人机身（放进作物层做深度排序；重建时需保留）
 
   constructor(private atlas: PlantAtlas, kinds: WeedKind[], private onPlotTap: (plotId: number) => void) {
@@ -105,6 +106,15 @@ export class Field {
     this.actor = c;
     this.cropLayer.addChild(c);
   }
+
+  /** 全量光影：把作物层(含野草/机身)渲到 RT，供主程序做冠层投影（上叶投下叶/接地，密集处顶亮底暗）。 */
+  renderCanopyTo(renderer: Renderer, rt: RenderTexture): void {
+    renderer.render({ container: this.cropLayer, target: rt, clear: true });
+  }
+  /** 轻投影模式：开=显示每株接地阴影层；全量光影模式下关闭(改用 RT 冠层投影，避免重复)。 */
+  setLightShadows(on: boolean): void { this.shadowLayer.visible = on; }
+  /** 当前接地阴影强度(随天气/昼夜)。 */
+  get shadowStrength(): number { return this.lastShadowAlpha; }
 
   buildHitAreas() {
     this.hitLayer.removeChildren();
@@ -254,6 +264,7 @@ export class Field {
     const relight = ambientTint(lum); // 环境色罩染：白天近中性、夜里转冷蓝 → 与场景融为一体
     // 接地阴影强度对齐背景：随天气「定向光强度」(晴/晴夜强、阴雨弱)，夜里仅轻微减弱（晴夜有月投影仍强）
     const shadowAlpha = (0.2 + 0.52 * (SHADOW_CLEARNESS[wx] ?? 0.5)) * (0.85 + 0.15 * lum);
+    this.lastShadowAlpha = shadowAlpha;
     const SHTEX = this.shadowTex.width || 64;
 
     for (const rec of this.recs) {
