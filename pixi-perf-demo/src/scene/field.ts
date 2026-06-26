@@ -31,12 +31,19 @@ export class Field {
   private cropLayer = new Container();
   private hitLayer = new Container();
   private recs: SpriteRec[] = [];
-  private weedTypes: Texture[][] = []; // 每类杂草一组三阶段贴图 [幼苗, 生长, 成熟]
+  private weedTypes: Texture[][] = []; // 每类杂草一组阶段贴图（阶段数可不同）
+  private habitats: ('both' | 'wild')[] = []; // 习性：both=田/野皆有，wild=主要野地
+  private bothTypes: number[] = []; // habitat==='both' 的类型索引（田内杂草只用这些）
   private weedRecs: { sprite: Sprite; plotId: number; order: number; stages: Texture[]; targetH: number; cur: number }[] = [];
+  // 野地杂草：田块之外(田埂/路边/前景空地)按自然习性长草，不翻耕/不被田务清除；贴巡田路(onPath)者被经过的机器人压除
+  private wildRecs: { sprite: Sprite; stages: Texture[]; targetH: number; cur: number; onPath: boolean; prog: number }[] = [];
   private actor: Container | null = null; // 机器人机身（放进作物层做深度排序；重建时需保留）
 
-  constructor(private atlas: PlantAtlas, weedTypes: Texture[][], private onPlotTap: (plotId: number) => void) {
+  constructor(private atlas: PlantAtlas, weedTypes: Texture[][], habitats: ('both' | 'wild')[], private onPlotTap: (plotId: number) => void) {
     this.weedTypes = weedTypes;
+    this.habitats = habitats;
+    this.bothTypes = weedTypes.map((_, i) => i).filter((i) => (this.habitats[i] ?? 'both') === 'both');
+    if (this.bothTypes.length === 0) this.bothTypes = weedTypes.map((_, i) => i); // 兜底：无 both 类则田内用全部
     this.cropLayer.sortableChildren = true; // 作物 + 杂草 + 机器人机身 共用此层，按 y 纵深统一排序
     this.view.addChild(this.cropLayer);
     this.view.addChild(this.hitLayer);
@@ -102,8 +109,8 @@ export class Field {
       // 杂草：每地块预置 ~12 株（随机位置/类型，写实三阶段贴图），随 weedProg 逐株出现、换阶段(幼→中→熟)并长大（蔓延）
       for (let k = 0; this.weedTypes.length > 0 && k < 12; k++) {
         const wpt = quadPoint(q, 0.1 + plantHash(p.id, k, 21) * 0.8, 0.12 + plantHash(p.id, k, 22) * 0.76);
-        const type = Math.min(this.weedTypes.length - 1, Math.floor(plantHash(p.id, k, 23) * this.weedTypes.length));
-        const stages = this.weedTypes[type]; // [幼苗, 生长, 成熟]
+        const type = this.bothTypes[Math.floor(plantHash(p.id, k, 23) * this.bothTypes.length) % this.bothTypes.length]; // 田内只用「田/野皆有」类
+        const stages = this.weedTypes[type]; // [幼苗, 生长, 成熟...]
         const s = new Sprite(stages[0]);
         s.anchor.set(0.5, 0.96);
         s.position.set(pctX(wpt.x), pctY(wpt.y));
@@ -115,6 +122,46 @@ export class Field {
         const targetH = 34 * depthScale * sizeJit; // 成熟期目标高度(px)：小而朴素的地面杂草
         this.weedRecs.push({ sprite: s, plotId: p.id, order: k, stages, targetH, cur: -1 });
       }
+    }
+    this.buildWildWeeds(world);
+  }
+
+  // 野地杂草：在田块之外的地面(田埂/路边/前景空地)按自然习性散布长草。位置避开所有田块四边形，
+  // 限定在地面带(纵向 50~99%，避开远山/天空)。贴近巡田路网节点者标 onPath → 经过的机器人会压除。
+  private buildWildWeeds(world: World) {
+    this.wildRecs = [];
+    if (this.weedTypes.length === 0) return;
+    const quads = Array.from({ length: 12 }, (_, i) => getQuad(i));
+    const nodes = world.roadNet?.nodes ?? [];
+    const edges = world.roadNet?.edges ?? [];
+    const TARGET = 80;
+    let placed = 0;
+    for (let a = 1; placed < TARGET && a < TARGET * 8; a++) {
+      const gx = 1 + wildHash(a, 1) * 98;   // 横向 1..99 %
+      const gy = 50 + wildHash(a, 2) * 49;  // 纵向 50..99 %（地面带）
+      if (quads.some((q) => pointInQuad(gx, gy, q))) continue; // 落在田块内→留给田内杂草
+      // onPath：到任一巡田路边(节点连线段)够近 → 长在机器人巡田路上，会被经过的机器人拔/压除
+      let onPath = false;
+      for (const [ia, ib] of edges) {
+        const A = nodes[ia], B = nodes[ib];
+        if (A && B && distToSeg(gx, gy, A.left, A.top, B.left, B.top) < 3.5) { onPath = true; break; }
+      }
+      const wt = this.weedTypes.length;
+      const type = Math.floor(wildHash(a, 3) * wt) % wt; // 野地用全部类型（含仅野地的 wild 类）
+      const stages = this.weedTypes[type];
+      const s = new Sprite(stages[0]);
+      s.anchor.set(0.5, 0.96);
+      s.position.set(pctX(gx), pctY(gy));
+      s.zIndex = gy; // 与作物/机身同层按 y 纵深排序
+      s.visible = false;
+      this.cropLayer.addChild(s);
+      const depthScale = 0.55 + (gy / 100) * 0.85;
+      const sizeJit = 0.75 + wildHash(a, 4) * 0.7;
+      const targetH = 40 * depthScale * sizeJit; // 野地草比田内(34)略高
+      // 初始成熟度参差(野地本就长期无人打理)；onPath 的起步低些(常被压)
+      const prog = onPath ? wildHash(a, 6) * 18 : 12 + wildHash(a, 6) * 64;
+      this.wildRecs.push({ sprite: s, stages, targetH, cur: -1, onPath, prog });
+      placed++;
     }
   }
 
@@ -221,6 +268,23 @@ export class Field {
       wr.sprite.scale.set(h / (wr.stages[wstage].height || 1));
       wr.sprite.tint = relight;
     }
+
+    // —— 野地杂草：野地无人打理 → 常年自然生长到成熟；贴巡田路(onPath)且机器人在近旁 → 被经过的机器人压除/拔掉 ——
+    const rob = this.actor && this.actor.visible && this.actor.x > 0 ? this.actor : null;
+    for (const wr of this.wildRecs) {
+      const near = !!(rob && wr.onPath) && Math.hypot(rob!.x - wr.sprite.x, rob!.y - wr.sprite.y) < 50;
+      if (near) wr.prog = Math.max(0, wr.prog - dtMS / 16);   // 机器人经过 → 压除/拔掉(快)
+      else wr.prog = Math.min(100, wr.prog + dtMS / 1000);    // 自然生长(约 100s 到成熟)
+      if (wr.prog < 4) { wr.sprite.visible = false; continue; }
+      wr.sprite.visible = true;
+      const grow = wr.prog / 100;
+      const n = wr.stages.length;
+      const wstage = Math.min(n - 1, Math.floor(grow * n));
+      if (wr.cur !== wstage) { wr.sprite.texture = wr.stages[wstage]; wr.cur = wstage; }
+      const h = wr.targetH * (0.42 + 0.58 * grow);
+      wr.sprite.scale.set(h / (wr.stages[wstage].height || 1));
+      wr.sprite.tint = relight;
+    }
   }
 
   get spriteCount(): number {
@@ -253,6 +317,34 @@ function quadPoint(q: number[][], u: number, v: number): { x: number; y: number 
   const tx = q[0][0] + (q[1][0] - q[0][0]) * u, ty = q[0][1] + (q[1][1] - q[0][1]) * u;
   const bxp = q[3][0] + (q[2][0] - q[3][0]) * u, byp = q[3][1] + (q[2][1] - q[3][1]) * u;
   return { x: tx + (bxp - tx) * v, y: ty + (byp - ty) * v };
+}
+// 野地杂草布点的确定性伪随机（与 plantHash 独立，避免强刷位置漂移）
+function wildHash(i: number, n: number): number {
+  let x = (i * 0x9e3779b1 + n * 0x85ebca77 + 0x27d4eb2f) >>> 0;
+  x = Math.imul(x ^ (x >>> 15), 0x2c1b3c6d) >>> 0;
+  x = Math.imul(x ^ (x >>> 13), 0x297a2d39) >>> 0;
+  x ^= x >>> 16;
+  return (x >>> 0) / 4294967296;
+}
+// 点到线段最短距离（用于判断野草是否长在巡田路边）
+function distToSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 > 1e-9 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+// 点 (px,py) 是否在凸四边形 q 内（顺/逆时针均可：要求各边叉积同号）
+function pointInQuad(px: number, py: number, q: number[][]): boolean {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4];
+    const cross = (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0]);
+    if (Math.abs(cross) < 1e-9) continue;
+    const s = cross > 0 ? 1 : -1;
+    if (sign === 0) sign = s;
+    else if (s !== sign) return false;
+  }
+  return true;
 }
 function makeColorVar(id: number, idx: number): number {
   const h = plantHash(id, idx, 7); // 0..1 色相倾向
