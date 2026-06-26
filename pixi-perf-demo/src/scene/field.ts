@@ -37,6 +37,7 @@ export interface WeedKind {
   inWild: boolean;                            // 可长在野地
   onRoad: boolean;                            // 可长在巡田路上
   nearWater: boolean;                         // 喜水（weed_8）
+  hasWithered: boolean;                       // 末阶段是否为枯萎帧 → 生长期只到成熟，枯萎期才显末帧
 }
 
 // 水源位置（左下角，% 坐标，与 BASE_CORNERS 同系）—— 喜水野草(weed_8)在此成片密生。要挪改这一处即可。
@@ -45,6 +46,15 @@ const WATER_SRC = { x: 9, y: 89 };
 // 各天气下「定向光强度」(0..1)：晴（含晴夜有月）→ 强投影；阴雨漫射 → 弱投影。
 // 接地阴影强度据此对齐背景植物投影（晴夜背景投影也强，故夜里阴影不随亮度变弱）。
 const SHADOW_CLEARNESS: Record<string, number> = { clear: 1, drought: 0.95, frost: 0.58, cloudy: 0.28, lightrain: 0.22, rain: 0.12 };
+
+// 野草生命周期时长(ms)：成熟保持 / 枯萎(大幅延长) / 枯死后保留。按所在位置(田/野地/路)不同。
+const W_MATURE = 9000, W_MATURE_RND = 16000;
+const WITHER_FIELD = 34000, WITHER_OPEN = 38000, WITHER_ROAD = 24000; // 枯萎时长(大幅延长，rule3)
+const DEAD_OPEN = 165000, FADE_ROAD = 12000;  // 野地枯株保留极长后原地重生(rule5)；路上枯株淡出(延长)后异地重生(rule5)
+// 归一化时各阶段「植株占画布高」比例(与 weed_norm 脚本同公式)。渲染时补偿换阶段的尺寸跳变 → 连续生长无突变。
+function stageRel(stage: number, n: number): number {
+  return n > 1 ? 0.32 + 0.68 * Math.pow(stage / (n - 1), 0.8) : 1;
+}
 
 // 地块层：12 个可点多边形（点击=浇水）+ 全田作物精灵（共享图集 → 合批）。
 // 含逐项移植的「倒伏（lodging）随机机制」与「应激滤镜（旱黄/冻蓝/涝暗/枯褐/过熟褪色）」。
@@ -59,8 +69,8 @@ export class Field {
   private fieldKinds: number[] = []; // 可长在田里的类型索引
   private wildKinds: number[] = [];  // 可长在野地的类型索引
   private roadKinds: number[] = [];  // 可长在路上的类型索引
-  // 田内杂草：含多样性随机（色彩/方向/尺寸/速度），随 weedProg 出现
-  private weedRecs: { sprite: Sprite; plotId: number; order: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: Sprite; colorVar: number; restAng: number; gdiv: number }[] = [];
+  // 田内杂草：随 weedProg 出现，出现后走个体生命周期(生长→成熟→枯萎转黑倒伏)，枯后保留为残株待机器人清枯(rule4)
+  private weedRecs: { sprite: Sprite; plotId: number; order: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: Sprite; colorVar: number; restAng: number; growMul: number; life: number; phase: number; hold: number; wither: number; lodge: number }[] = [];
   // 野地杂草：田块外按习性长草，有完整生命周期（生长→成熟→枯萎→原地/异地重生）+ 多样性随机
   private wildRecs: { sprite: Sprite; shadow: Sprite; kind: WeedKind; onPath: boolean; bx: number; by: number; sizeJit: number; colorVar: number; restAng: number; growMul: number; cur: number; life: number; phase: number; hold: number; wither: number; lodge: number; pressed: boolean }[] = [];
   private roadNodes: { left: number; top: number }[] = []; // 供野草异地重生时判定 onPath
@@ -161,8 +171,7 @@ export class Field {
         this.cropLayer.addChild(s);
         const sizeJit = 0.8 + plantHash(p.id, k, 24) * 0.5;
         const targetH = kind.sizeH * perspScale(wpt.y) * sizeJit; // 透视：远小近大 + 类型尺寸层级 + 随株大小
-        const gdiv = (24 + plantHash(p.id, k, 25) * 18) * (kind.growSec / 100); // 生长速度随株 & 随物种不同（错落）
-        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, kind, targetH, cur: -1, malign: kind.category === 'malignant', shadow: this.mkShadow(), colorVar: weedTint(plantHash(p.id, k, 26), plantHash(p.id, k, 27)), restAng: (plantHash(p.id, k, 28) - 0.5) * 26, gdiv });
+        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, kind, targetH, cur: -1, malign: kind.category === 'malignant', shadow: this.mkShadow(), colorVar: weedTint(plantHash(p.id, k, 26), plantHash(p.id, k, 27)), restAng: (plantHash(p.id, k, 28) - 0.5) * 22, growMul: 0.7 + plantHash(p.id, k, 25) * 0.8, life: 0, phase: 0, hold: W_MATURE + plantHash(p.id, k, 29) * W_MATURE_RND, wither: 0, lodge: 0 });
       }
     }
     this.buildWildWeeds(world);
@@ -244,7 +253,7 @@ export class Field {
       : 1;
     const relight = ambientTint(lum); // 环境色罩染：白天近中性、夜里转冷蓝 → 与场景融为一体
     // 接地阴影强度对齐背景：随天气「定向光强度」(晴/晴夜强、阴雨弱)，夜里仅轻微减弱（晴夜有月投影仍强）
-    const shadowAlpha = (0.15 + 0.45 * (SHADOW_CLEARNESS[wx] ?? 0.5)) * (0.85 + 0.15 * lum);
+    const shadowAlpha = (0.2 + 0.52 * (SHADOW_CLEARNESS[wx] ?? 0.5)) * (0.85 + 0.15 * lum);
     const SHTEX = this.shadowTex.width || 64;
 
     for (const rec of this.recs) {
@@ -330,61 +339,52 @@ export class Field {
     // —— 杂草：按地块 weedProg 逐株出现(蔓延)，按生长进度换阶段贴图(幼→中→熟)并连续长高；跟随昼夜明暗 ——
     for (const wr of this.weedRecs) {
       const plot = world.plots[wr.plotId];
-      if (!plot) { wr.sprite.visible = false; wr.shadow.visible = false; continue; }
-      const wp = wr.malign ? plot.malign : plot.weedProg; // 恶性株按 malign(快蔓延)出现，普通株按 weedProg
+      const sp = wr.sprite;
+      if (!plot) { sp.visible = false; wr.shadow.visible = false; continue; }
+      const wp = wr.malign ? plot.malign : plot.weedProg; // 恶性株按 malign 出现，普通株按 weedProg
       const appearAt = wr.order * 7 + 6; // 越靠后的草越晚冒出 → 视觉上"蔓延"
-      if (wp <= appearAt) { wr.sprite.visible = false; wr.shadow.visible = false; continue; }
-      wr.sprite.visible = true;
-      const grow = Math.min(1, (wp - appearAt) / wr.gdiv); // 生长速度随株/物种不同（错落，不一起长大）
-      const stg = wr.kind.stages;
-      const wstage = Math.min(stg.length - 1, Math.floor(grow * stg.length));
-      if (wr.cur !== wstage) { wr.sprite.texture = stg[wstage]; wr.cur = wstage; }
-      const h = wr.targetH * (0.42 + 0.58 * grow);
-      wr.sprite.scale.set(h / (stg[wstage].height || 1));
-      wr.sprite.rotation = (wr.restAng * Math.PI) / 180;    // 生长方向多样（含倾斜倒伏感）
-      wr.sprite.tint = multiplyColor(relight, wr.colorVar); // 健康色彩随机
-      setShadow(wr.shadow, wr.sprite.x, wr.sprite.y, h, shadowAlpha, SHTEX);
+      if (wp <= appearAt) { // 未冒出 / 已被除草翻耕 → 隐藏并复位生命周期
+        sp.visible = false; wr.shadow.visible = false;
+        wr.life = 0; wr.phase = 0; wr.wither = 0; wr.lodge = 0; wr.cur = -1; continue;
+      }
+      const kind = wr.kind;
+      // 个体生命周期：生长→成熟→枯萎；枯死后保留为黑残株(rule4，不自动消失，待机器人清枯/翻耕清除)
+      if (wr.phase === 0) { wr.life += dtMS / (kind.growSec * wr.growMul * 1000); if (wr.life >= 1) { wr.life = 1; wr.phase = 1; } }
+      else if (wr.phase === 1) { wr.hold -= dtMS; if (wr.hold <= 0) wr.phase = 2; }
+      else if (wr.phase === 2) { wr.wither += dtMS / WITHER_FIELD; if (wr.wither >= 1) { wr.wither = 1; wr.phase = 3; } }
+      const lodgeTarget = wr.phase >= 2 ? 52 * Math.min(1, wr.wither) : 0; // 枯萎渐渐倒伏
+      wr.lodge += (lodgeTarget - wr.lodge) * Math.min(1, dtMS / 800);
+      drawWeed(sp, wr.shadow, kind, wr.targetH, wr.life, wr.phase, wr.wither, wr.lodge, wr.restAng, wr.colorVar, relight, shadowAlpha, 1, (st) => { if (wr.cur !== st) { sp.texture = kind.stages[st]; wr.cur = st; } });
     }
 
-    // —— 野地杂草生命周期：生长→成熟→枯萎→消失；成熟后原地重生(rule5)；被机器人压过则倒伏枯死后异地重生(rule4) ——
+    // —— 野地杂草生命周期：生长→成熟→枯萎(倒伏/转黑/缩)→枯死。野地枯株保留极长后原地重生(rule5)；
+    //    路上枯株淡出(延长)后异地重生(rule5)；被机器人压过的路草进入枯萎并死后异地(rule4) ——
     const rob = this.actor && this.actor.visible && this.actor.x > 0 ? this.actor : null;
     for (const wr of this.wildRecs) {
       const kind = wr.kind, sp = wr.sprite;
-      // 机器人压过(onPath 且在近旁) → 立刻进入枯萎并标记(死后异地重生)
       if (rob && wr.onPath && wr.phase < 2 && Math.hypot(rob!.x - sp.x, rob!.y - sp.y) < 50) { wr.phase = 2; wr.pressed = true; }
-      if (wr.phase === 0) {                                  // 生长（各物种 growSec 不同 + 株速 growMul）
-        wr.life += dtMS / (kind.growSec * wr.growMul * 1000);
-        if (wr.life >= 1) { wr.life = 1; wr.phase = 1; }
-      } else if (wr.phase === 1) {                           // 成熟保持
+      let fade = 1;
+      if (wr.phase === 0) { wr.life += dtMS / (kind.growSec * wr.growMul * 1000); if (wr.life >= 1) { wr.life = 1; wr.phase = 1; } }
+      else if (wr.phase === 1) { wr.hold -= dtMS; if (wr.hold <= 0) wr.phase = 2; }
+      else if (wr.phase === 2) { // 枯萎(大幅延长)：路上较快、野地较慢
+        wr.wither += dtMS / (wr.onPath ? WITHER_ROAD : WITHER_OPEN);
+        if (wr.wither >= 1) { wr.wither = 1; wr.phase = 3; wr.hold = wr.onPath ? FADE_ROAD : DEAD_OPEN; } // 枯死后保留计时
+      } else { // phase 3 枯死保留
         wr.hold -= dtMS;
-        if (wr.hold <= 0) wr.phase = 2;                      // → 枯萎(rule5)
-      } else {                                               // 枯萎
-        wr.wither += dtMS / ((wr.pressed ? 5 : 16) * 1000);  // 被压枯得更快
-        if (wr.wither >= 1) {                                // 枯死消失 → 重生
-          if (wr.pressed) { const ns = this.randomWildSpot(); if (ns) { wr.bx = ns.x; wr.by = ns.y; wr.onPath = ns.onPath; sp.position.set(pctX(ns.x), pctY(ns.y)); sp.zIndex = ns.y; } } // 异地(rule4)，否则原地(rule5)
+        if (wr.onPath) fade = Math.max(0, wr.hold / FADE_ROAD);                 // 路上：缓慢淡出(延长)
+        else if (wr.hold < 9000) fade = Math.max(0, wr.hold / 9000);            // 野地：保留极久，末段才淡出
+        if (wr.hold <= 0) { // 重生：路上异地、野地原地
+          if (wr.onPath) { const ns = this.randomWildSpot(); if (ns) { wr.bx = ns.x; wr.by = ns.y; wr.onPath = ns.onPath; sp.position.set(pctX(ns.x), pctY(ns.y)); sp.zIndex = ns.y; } }
           wr.life = 0; wr.phase = 0; wr.wither = 0; wr.pressed = false; wr.lodge = 0; wr.cur = -1;
-          wr.hold = 4000 + Math.random() * 12000;
+          wr.hold = W_MATURE + Math.random() * W_MATURE_RND;
           wr.sizeJit = 0.7 + Math.random() * 0.7; wr.growMul = 0.7 + Math.random() * 0.8;
           wr.colorVar = weedTint(Math.random(), Math.random()); wr.restAng = (Math.random() - 0.5) * 22;
         }
       }
-      // 倒伏：枯萎(尤其被压)时逐渐倒下，绕根部旋转
-      const lodgeTarget = wr.phase === 2 ? (wr.pressed ? 80 : 46) * Math.min(1, wr.wither) : 0;
-      wr.lodge += (lodgeTarget - wr.lodge) * Math.min(1, dtMS / 700);
-      // 渲染（透视：远小近大；尺寸随株；枯萎略缩+转褐+末段淡出）
-      const targetH = kind.sizeH * perspScale(wr.by) * wr.sizeJit;
-      const h = targetH * (0.4 + 0.6 * Math.min(1, wr.life)) * (1 - wr.wither * 0.18);
-      if (h < 1.5) { sp.visible = false; wr.shadow.visible = false; continue; }
-      sp.visible = true;
-      const stg = kind.stages;
-      const wstage = wr.phase === 2 ? stg.length - 1 : Math.min(stg.length - 1, Math.floor(Math.min(1, wr.life) * stg.length)); // 枯萎显末帧(withered)
-      if (wr.cur !== wstage) { sp.texture = stg[wstage]; wr.cur = wstage; }
-      sp.scale.set(h / (stg[wstage].height || 1));
-      sp.rotation = ((wr.restAng + wr.lodge) * Math.PI) / 180;
-      const brown = wr.wither > 0 ? lerpColor(0xffffff, 0x6f5326, Math.min(1, wr.wither) * 0.85) : 0xffffff;
-      sp.tint = multiplyColor(multiplyColor(relight, wr.colorVar), brown);
-      sp.alpha = wr.wither > 0.7 ? Math.max(0, 1 - (wr.wither - 0.7) / 0.3) : 1; // 末段淡出后消失
-      setShadow(wr.shadow, sp.x, sp.y, h, shadowAlpha * (1 - wr.wither * 0.5), SHTEX);
+      const lodgeTarget = wr.phase >= 2 ? (wr.pressed ? 82 : 50) * Math.min(1, wr.wither) : 0;
+      wr.lodge += (lodgeTarget - wr.lodge) * Math.min(1, dtMS / 800);
+      const targetH = kind.sizeH * perspScale(wr.by) * wr.sizeJit; // 透视：远小近大（动态，随重生位置更新）
+      drawWeed(sp, wr.shadow, kind, targetH, wr.life, wr.phase, wr.wither, wr.lodge, wr.restAng, wr.colorVar, relight, shadowAlpha, fade, (st) => { if (wr.cur !== st) { sp.texture = kind.stages[st]; wr.cur = st; } });
     }
   }
 
@@ -443,9 +443,26 @@ function makeShadowTexture(): Texture {
 // 把阴影椭圆贴到植株根 (rx,ry)：宽随株高、压扁，略向右下偏（光从左上 → 投影落右下，对齐背景树影方向）
 function setShadow(sh: Sprite, rx: number, ry: number, hPx: number, alpha: number, tex: number) {
   sh.visible = true;
-  sh.position.set(rx + hPx * 0.10, ry + hPx * 0.015);
-  sh.scale.set((hPx * 0.62) / tex, (hPx * 0.22) / tex);
+  sh.position.set(rx + hPx * 0.17, ry + hPx * 0.03); // 月在左上 → 投影落右下；偏移加大
+  sh.scale.set((hPx * 0.98) / tex, (hPx * 0.34) / tex); // 投影继续调大
   sh.alpha = alpha;
+}
+// 渲染一株野草：连续生长(补偿阶段relH，消除换阶段突然变大) + 枯萎转黑/缩/倒 + 接地阴影。setTex(stage) 按需换贴图。
+function drawWeed(sp: Sprite, sh: Sprite, kind: WeedKind, targetH: number, life: number, phase: number, wither: number, lodge: number, restAng: number, colorVar: number, relight: number, shadowAlpha: number, fade: number, setTex: (stage: number) => void): void {
+  const stg = kind.stages, N = stg.length, growN = kind.hasWithered ? N - 1 : N;
+  const Lc = Math.min(1, life);
+  const stage = phase >= 2 ? N - 1 : Math.min(growN - 1, Math.floor(Lc * growN)); // 枯萎显末帧；生长只到成熟
+  const plantH = targetH * (0.34 + 0.66 * Math.pow(Lc, 0.85)) * (1 - wither * 0.4); // 连续株高 + 枯萎大幅缩小
+  if (plantH < 1.2 || fade <= 0.01) { sp.visible = false; sh.visible = false; return; }
+  sp.visible = true;
+  setTex(stage);
+  // 关键：目标株高 ÷ 该阶段贴图内植株占比(relH) → 换阶段只换形态、不跳大小（消除 yellowdock 突然长大）
+  sp.scale.set(plantH / (stageRel(stage, N) * (stg[stage].height || 1)));
+  sp.rotation = ((restAng + lodge) * Math.PI) / 180;
+  const dark = wither > 0 ? lerpColor(0xffffff, 0x241d14, Math.min(1, wither) * 0.9) : 0xffffff; // 枯萎转黑(rule4)
+  sp.tint = multiplyColor(multiplyColor(relight, colorVar), dark);
+  sp.alpha = fade;
+  setShadow(sh, sp.x, sp.y, plantH, shadowAlpha * (1 - wither * 0.55), 64);
 }
 function lerpColor(a: number, b: number, t: number): number {
   const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;

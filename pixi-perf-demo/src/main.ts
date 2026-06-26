@@ -66,7 +66,7 @@ async function boot() {
   // 每类按阶段顺序加载（阶段数可不同，weed_8 为 4 阶段含开花）；缺某张则用同类已加载贴图兜底，整类全失败则丢弃。
   // 野草登记表：分类(田地/野地/恶性) + 尺寸层级 + 蔓延形态 + 可生长区域。习性按真实生态设定，可调。
   // growSec=野地中长到成熟的秒数（各物种不同→错落生长，不一起长大）。
-  const WEED_DEFS: (Omit<WeedKind, 'stages'> & { files: string[] })[] = [
+  const WEED_DEFS: (Omit<WeedKind, 'stages' | 'hasWithered'> & { files: string[] })[] = [
     // 毛茛：田地类，喜水成片（rule4）
     { files: ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], category: 'field', sizeH: 42, growSec: 75, spread: 'patch', inField: true, inWild: true, onRoad: false, nearWater: true },
     { files: ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'], category: 'wild', sizeH: 34, growSec: 95, spread: 'mix', inField: false, inWild: true, onRoad: false, nearWater: false },
@@ -85,8 +85,8 @@ async function boot() {
       const texs = await Promise.all(def.files.map((f) => Assets.load<Texture>(av(`assets/${f}.png`)).catch(() => null)));
       const present = texs.filter((t): t is Texture => !!t);
       if (present.length === 0) return null;
-      const { files: _files, ...meta } = def;
-      return { ...meta, stages: texs.map((t) => t ?? present[present.length - 1]) as Texture[] } as WeedKind;
+      const { files, ...meta } = def;
+      return { ...meta, hasWithered: /withered/i.test(files[files.length - 1]), stages: texs.map((t) => t ?? present[present.length - 1]) as Texture[] } as WeedKind;
     }),
   )).filter((x): x is WeedKind => !!x);
 
