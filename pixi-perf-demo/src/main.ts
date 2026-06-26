@@ -65,19 +65,20 @@ async function boot() {
   // 写实杂草贴图：只用「有完整生长过程」的三类；其余单图类型待用户补全分阶段后再全量启用。
   // 每类按阶段顺序加载（阶段数可不同，weed_8 为 4 阶段含开花）；缺某张则用同类已加载贴图兜底，整类全失败则丢弃。
   // 野草登记表：分类(田地/野地/恶性) + 尺寸层级 + 蔓延形态 + 可生长区域。习性按真实生态设定，可调。
+  // growSec=野地中长到成熟的秒数（各物种不同→错落生长，不一起长大）。
   const WEED_DEFS: (Omit<WeedKind, 'stages'> & { files: string[] })[] = [
     // 毛茛：田地类，喜水成片（rule4）
-    { files: ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], category: 'field', sizeH: 42, spread: 'patch', inField: true, inWild: true, onRoad: false, nearWater: true },
-    { files: ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'], category: 'wild', sizeH: 34, spread: 'mix', inField: false, inWild: true, onRoad: false, nearWater: false },
-    { files: ['weed_10_baby', 'weed_10_baby_grow', 'weed_10_mature'], category: 'wild', sizeH: 34, spread: 'mix', inField: false, inWild: true, onRoad: false, nearWater: false },
+    { files: ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], category: 'field', sizeH: 42, growSec: 75, spread: 'patch', inField: true, inWild: true, onRoad: false, nearWater: true },
+    { files: ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'], category: 'wild', sizeH: 34, growSec: 95, spread: 'mix', inField: false, inWild: true, onRoad: false, nearWater: false },
+    { files: ['weed_10_baby', 'weed_10_baby_grow', 'weed_10_mature'], category: 'wild', sizeH: 34, growSec: 85, spread: 'mix', inField: false, inWild: true, onRoad: false, nearWater: false },
     // 鬼针草：田地类（rule7 随机，可成片可单株）
-    { files: ['weed_11_baby', 'weed_11_grow', 'weed_11_flower', 'weed_11_mature'], category: 'field', sizeH: 40, spread: 'mix', inField: true, inWild: true, onRoad: false, nearWater: false },
-    // 蛇莓 Potentilla：田/路/野皆可，匍匐成片、矮（rule5）
-    { files: ['weed_potentilla_baby', 'weed_potentilla_grow', 'weed_potentilla_growflower', 'weed_potentilla_mature', 'weed_potentilla_withered'], category: 'field', sizeH: 26, spread: 'patch', inField: true, inWild: true, onRoad: true, nearWater: false },
+    { files: ['weed_11_baby', 'weed_11_grow', 'weed_11_flower', 'weed_11_mature'], category: 'field', sizeH: 40, growSec: 110, spread: 'mix', inField: true, inWild: true, onRoad: false, nearWater: false },
+    // 蛇莓 Potentilla：田/路/野皆可，匍匐成片、矮（rule5）；缩小40%(26→16)、放慢蔓延(growSec 大)（本轮 rule1）
+    { files: ['weed_potentilla_baby', 'weed_potentilla_grow', 'weed_potentilla_growflower', 'weed_potentilla_mature', 'weed_potentilla_withered'], category: 'field', sizeH: 16, growSec: 155, spread: 'patch', inField: true, inWild: true, onRoad: true, nearWater: false },
     // 车前草 Asiatic plantain：主要路上、单株（rule6）；尺寸 = Yellow Dock 的 60%（rule8）
-    { files: ['weed_plantain_baby', 'weed_plantain_grow', 'weed_plantain_flower', 'weed_plantain_withered'], category: 'wild', sizeH: 36, spread: 'single', inField: false, inWild: false, onRoad: true, nearWater: false },
+    { files: ['weed_plantain_baby', 'weed_plantain_grow', 'weed_plantain_flower', 'weed_plantain_withered'], category: 'wild', sizeH: 36, growSec: 120, spread: 'single', inField: false, inWild: false, onRoad: true, nearWater: false },
     // Yellow Dock：恶性类，最大≈番茄成熟期（rule8）；田/路/野皆可、快蔓延、抢营养、毁路（rule3）
-    { files: ['weed_yellowdock_baby', 'weed_yellowdock_grow', 'weed_yellowdock_flower', 'weed_yellowdock_withered'], category: 'malignant', sizeH: 60, spread: 'patch', inField: true, inWild: true, onRoad: true, nearWater: false },
+    { files: ['weed_yellowdock_baby', 'weed_yellowdock_grow', 'weed_yellowdock_flower', 'weed_yellowdock_withered'], category: 'malignant', sizeH: 60, growSec: 90, spread: 'patch', inField: true, inWild: true, onRoad: true, nearWater: false },
   ];
   const weedKinds = (await Promise.all(
     WEED_DEFS.map(async (def) => {

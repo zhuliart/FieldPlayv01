@@ -31,6 +31,7 @@ export interface WeedKind {
   stages: Texture[];                          // 阶段贴图（baby→…→末，已统一画布归一化）
   category: 'field' | 'wild' | 'malignant';   // 田地类 / 野地类 / 恶性类（标签）
   sizeH: number;                              // 成熟目标高(px)：尺寸层级（Yellow Dock 最大≈番茄）
+  growSec: number;                            // 野地长到成熟的秒数（各物种不同→错落生长）
   spread: 'patch' | 'single' | 'mix';         // 成片 / 单株 / 皆可
   inField: boolean;                           // 可长在田里
   inWild: boolean;                            // 可长在野地
@@ -54,9 +55,12 @@ export class Field {
   private fieldKinds: number[] = []; // 可长在田里的类型索引
   private wildKinds: number[] = [];  // 可长在野地的类型索引
   private roadKinds: number[] = [];  // 可长在路上的类型索引
-  private weedRecs: { sprite: Sprite; plotId: number; order: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: Sprite }[] = [];
-  // 野地杂草：田块之外(田埂/路边/前景空地)按自然习性长草，不翻耕/不被田务清除；贴巡田路(onPath)者被经过的机器人压除
-  private wildRecs: { sprite: Sprite; kind: WeedKind; targetH: number; cur: number; onPath: boolean; prog: number; shadow: Sprite }[] = [];
+  // 田内杂草：含多样性随机（色彩/方向/尺寸/速度），随 weedProg 出现
+  private weedRecs: { sprite: Sprite; plotId: number; order: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: Sprite; colorVar: number; restAng: number; gdiv: number }[] = [];
+  // 野地杂草：田块外按习性长草，有完整生命周期（生长→成熟→枯萎→原地/异地重生）+ 多样性随机
+  private wildRecs: { sprite: Sprite; shadow: Sprite; kind: WeedKind; onPath: boolean; bx: number; by: number; sizeJit: number; colorVar: number; restAng: number; growMul: number; cur: number; life: number; phase: number; hold: number; wither: number; lodge: number; pressed: boolean }[] = [];
+  private roadNodes: { left: number; top: number }[] = []; // 供野草异地重生时判定 onPath
+  private roadEdges: [number, number][] = [];
   private actor: Container | null = null; // 机器人机身（放进作物层做深度排序；重建时需保留）
 
   constructor(private atlas: PlantAtlas, kinds: WeedKind[], private onPlotTap: (plotId: number) => void) {
@@ -151,10 +155,10 @@ export class Field {
         s.zIndex = wpt.y; // 与作物/机身同层按 y 排序 → 身前的杂草遮挡机器人底部，身后的在其后
         s.visible = false;
         this.cropLayer.addChild(s);
-        const depthScale = 0.6 + (wpt.y / 100) * 0.7; // 近大远小
         const sizeJit = 0.8 + plantHash(p.id, k, 24) * 0.5;
-        const targetH = kind.sizeH * depthScale * sizeJit; // 按类型尺寸层级
-        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, kind, targetH, cur: -1, malign: kind.category === 'malignant', shadow: this.mkShadow() });
+        const targetH = kind.sizeH * perspScale(wpt.y) * sizeJit; // 透视：远小近大 + 类型尺寸层级 + 随株大小
+        const gdiv = (24 + plantHash(p.id, k, 25) * 18) * (kind.growSec / 100); // 生长速度随株 & 随物种不同（错落）
+        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, kind, targetH, cur: -1, malign: kind.category === 'malignant', shadow: this.mkShadow(), colorVar: weedTint(plantHash(p.id, k, 26), plantHash(p.id, k, 27)), restAng: (plantHash(p.id, k, 28) - 0.5) * 26, gdiv });
       }
     }
     this.buildWildWeeds(world);
@@ -168,6 +172,7 @@ export class Field {
     const quads = Array.from({ length: 12 }, (_, i) => getQuad(i));
     const nodes = world.roadNet?.nodes ?? [];
     const edges = world.roadNet?.edges ?? [];
+    this.roadNodes = nodes; this.roadEdges = edges; // 存一份供野草异地重生判定 onPath
     const inField = (x: number, y: number) => quads.some((q) => pointInQuad(x, y, q));
     const onPathOf = (x: number, y: number): boolean => {
       for (const [ia, ib] of edges) { const A = nodes[ia], B = nodes[ib]; if (A && B && distToSeg(x, y, A.left, A.top, B.left, B.top) < 3.5) return true; }
@@ -177,18 +182,23 @@ export class Field {
     const spawn = (gx: number, gy: number, ki: number, h: number): boolean => {
       if (gx < 1 || gx > 99 || gy < 50 || gy > 99 || inField(gx, gy) || isBgVeg(gx, gy)) return false; // 避开田块 & 背景已有树/灌木
       const kind = this.kinds[ki];
-      const onPath = onPathOf(gx, gy);
       const s = new Sprite(kind.stages[0]);
       s.anchor.set(0.5, 0.99);
       s.position.set(pctX(gx), pctY(gy));
       s.zIndex = gy; // 与作物/机身同层按 y 纵深排序
       s.visible = false;
       this.cropLayer.addChild(s);
-      const depthScale = 0.55 + (gy / 100) * 0.85;
-      const sizeJit = 0.75 + wildHash(h, 4) * 0.7;
-      const targetH = kind.sizeH * depthScale * sizeJit; // 按类型尺寸层级
-      const prog = onPath ? wildHash(h, 6) * 18 : 12 + wildHash(h, 6) * 64; // onPath 起步低(常被压)
-      this.wildRecs.push({ sprite: s, kind, targetH, cur: -1, onPath, prog, shadow: this.mkShadow() });
+      // 多样性随机(尺寸/色彩/方向/速度) + 初始生命阶段参差(野地长期无人打理)
+      this.wildRecs.push({
+        sprite: s, shadow: this.mkShadow(), kind, onPath: onPathOf(gx, gy),
+        bx: gx, by: gy,
+        sizeJit: 0.7 + wildHash(h, 4) * 0.7,
+        colorVar: weedTint(wildHash(h, 9), wildHash(h, 10)),
+        restAng: (wildHash(h, 11) - 0.5) * 22,
+        growMul: 0.7 + wildHash(h, 12) * 0.8,
+        cur: -1, life: 0.12 + wildHash(h, 6) * 0.88, phase: 0,
+        hold: 4000 + wildHash(h, 8) * 12000, wither: 0, lodge: 0, pressed: false,
+      });
       return true;
     };
     // 簇生：以 (cx,cy) 为中心按数量 n 撒同类成簇（n=1 即单株）
@@ -216,7 +226,7 @@ export class Field {
       if (pool.length === 0) continue;
       const ki = pool[Math.floor(wildHash(a, 3) * pool.length) % pool.length];
       const sp = this.kinds[ki].spread;
-      const n = sp === 'single' ? 1 : sp === 'patch' ? 3 + Math.floor(wildHash(a, 7) * 2) : 1 + Math.floor(wildHash(a, 7) * 2);
+      const n = sp === 'single' ? 1 : sp === 'patch' ? 2 + Math.floor(wildHash(a, 7) * 2) : 1 + Math.floor(wildHash(a, 7) * 2);
       const before = this.wildRecs.length;
       cluster(gx, gy, ki, n, a);
       placed += this.wildRecs.length - before;
@@ -320,34 +330,69 @@ export class Field {
       const appearAt = wr.order * 7 + 6; // 越靠后的草越晚冒出 → 视觉上"蔓延"
       if (wp <= appearAt) { wr.sprite.visible = false; wr.shadow.visible = false; continue; }
       wr.sprite.visible = true;
-      const grow = Math.min(1, (wp - appearAt) / 30); // 0..1 该株生长进度
-      const stg = wr.kind.stages;                          // 各类阶段数可不同
-      const wstage = Math.min(stg.length - 1, Math.floor(grow * stg.length)); // 按阶段数均分生长进度
-      if (wr.cur !== wstage) { wr.sprite.texture = stg[wstage]; wr.cur = wstage; }
-      // 屏上高度连续(0.42→1.0×targetH)，除以当前阶段贴图实高 → 换阶段不跳高，只换形态细节
-      const h = wr.targetH * (0.42 + 0.58 * grow);
-      wr.sprite.scale.set(h / (stg[wstage].height || 1));
-      wr.sprite.tint = relight;
-      setShadow(wr.shadow, wr.sprite.x, wr.sprite.y, h, shadowAlpha, SHTEX);
-    }
-
-    // —— 野地杂草：野地无人打理 → 常年自然生长到成熟；贴巡田路(onPath)且机器人在近旁 → 被经过的机器人压除/拔掉 ——
-    const rob = this.actor && this.actor.visible && this.actor.x > 0 ? this.actor : null;
-    for (const wr of this.wildRecs) {
-      const near = !!(rob && wr.onPath) && Math.hypot(rob!.x - wr.sprite.x, rob!.y - wr.sprite.y) < 50;
-      if (near) wr.prog = Math.max(0, wr.prog - dtMS / 16);   // 机器人经过 → 压除/拔掉(快)
-      else wr.prog = Math.min(100, wr.prog + dtMS / 1000);    // 自然生长(约 100s 到成熟)
-      if (wr.prog < 4) { wr.sprite.visible = false; wr.shadow.visible = false; continue; }
-      wr.sprite.visible = true;
-      const grow = wr.prog / 100;
+      const grow = Math.min(1, (wp - appearAt) / wr.gdiv); // 生长速度随株/物种不同（错落，不一起长大）
       const stg = wr.kind.stages;
       const wstage = Math.min(stg.length - 1, Math.floor(grow * stg.length));
       if (wr.cur !== wstage) { wr.sprite.texture = stg[wstage]; wr.cur = wstage; }
       const h = wr.targetH * (0.42 + 0.58 * grow);
       wr.sprite.scale.set(h / (stg[wstage].height || 1));
-      wr.sprite.tint = relight;
+      wr.sprite.rotation = (wr.restAng * Math.PI) / 180;    // 生长方向多样（含倾斜倒伏感）
+      wr.sprite.tint = multiplyColor(relight, wr.colorVar); // 健康色彩随机
       setShadow(wr.shadow, wr.sprite.x, wr.sprite.y, h, shadowAlpha, SHTEX);
     }
+
+    // —— 野地杂草生命周期：生长→成熟→枯萎→消失；成熟后原地重生(rule5)；被机器人压过则倒伏枯死后异地重生(rule4) ——
+    const rob = this.actor && this.actor.visible && this.actor.x > 0 ? this.actor : null;
+    for (const wr of this.wildRecs) {
+      const kind = wr.kind, sp = wr.sprite;
+      // 机器人压过(onPath 且在近旁) → 立刻进入枯萎并标记(死后异地重生)
+      if (rob && wr.onPath && wr.phase < 2 && Math.hypot(rob!.x - sp.x, rob!.y - sp.y) < 50) { wr.phase = 2; wr.pressed = true; }
+      if (wr.phase === 0) {                                  // 生长（各物种 growSec 不同 + 株速 growMul）
+        wr.life += dtMS / (kind.growSec * wr.growMul * 1000);
+        if (wr.life >= 1) { wr.life = 1; wr.phase = 1; }
+      } else if (wr.phase === 1) {                           // 成熟保持
+        wr.hold -= dtMS;
+        if (wr.hold <= 0) wr.phase = 2;                      // → 枯萎(rule5)
+      } else {                                               // 枯萎
+        wr.wither += dtMS / ((wr.pressed ? 5 : 16) * 1000);  // 被压枯得更快
+        if (wr.wither >= 1) {                                // 枯死消失 → 重生
+          if (wr.pressed) { const ns = this.randomWildSpot(); if (ns) { wr.bx = ns.x; wr.by = ns.y; wr.onPath = ns.onPath; sp.position.set(pctX(ns.x), pctY(ns.y)); sp.zIndex = ns.y; } } // 异地(rule4)，否则原地(rule5)
+          wr.life = 0; wr.phase = 0; wr.wither = 0; wr.pressed = false; wr.lodge = 0; wr.cur = -1;
+          wr.hold = 4000 + Math.random() * 12000;
+          wr.sizeJit = 0.7 + Math.random() * 0.7; wr.growMul = 0.7 + Math.random() * 0.8;
+          wr.colorVar = weedTint(Math.random(), Math.random()); wr.restAng = (Math.random() - 0.5) * 22;
+        }
+      }
+      // 倒伏：枯萎(尤其被压)时逐渐倒下，绕根部旋转
+      const lodgeTarget = wr.phase === 2 ? (wr.pressed ? 80 : 46) * Math.min(1, wr.wither) : 0;
+      wr.lodge += (lodgeTarget - wr.lodge) * Math.min(1, dtMS / 700);
+      // 渲染（透视：远小近大；尺寸随株；枯萎略缩+转褐+末段淡出）
+      const targetH = kind.sizeH * perspScale(wr.by) * wr.sizeJit;
+      const h = targetH * (0.4 + 0.6 * Math.min(1, wr.life)) * (1 - wr.wither * 0.18);
+      if (h < 1.5) { sp.visible = false; wr.shadow.visible = false; continue; }
+      sp.visible = true;
+      const stg = kind.stages;
+      const wstage = wr.phase === 2 ? stg.length - 1 : Math.min(stg.length - 1, Math.floor(Math.min(1, wr.life) * stg.length)); // 枯萎显末帧(withered)
+      if (wr.cur !== wstage) { sp.texture = stg[wstage]; wr.cur = wstage; }
+      sp.scale.set(h / (stg[wstage].height || 1));
+      sp.rotation = ((wr.restAng + wr.lodge) * Math.PI) / 180;
+      const brown = wr.wither > 0 ? lerpColor(0xffffff, 0x6f5326, Math.min(1, wr.wither) * 0.85) : 0xffffff;
+      sp.tint = multiplyColor(multiplyColor(relight, wr.colorVar), brown);
+      sp.alpha = wr.wither > 0.7 ? Math.max(0, 1 - (wr.wither - 0.7) / 0.3) : 1; // 末段淡出后消失
+      setShadow(wr.shadow, sp.x, sp.y, h, shadowAlpha * (1 - wr.wither * 0.5), SHTEX);
+    }
+  }
+
+  // 为被压枯死的野草找一个开阔野地(非田块/非背景植被/非路)的重生点
+  private randomWildSpot(): { x: number; y: number; onPath: boolean } | null {
+    for (let t = 0; t < 24; t++) {
+      const x = 1 + Math.random() * 98, y = 50 + Math.random() * 49;
+      let bad = isBgVeg(x, y);
+      for (let i = 0; !bad && i < 12; i++) if (pointInQuad(x, y, getQuad(i))) bad = true;
+      for (const [ia, ib] of this.roadEdges) { const A = this.roadNodes[ia], B = this.roadNodes[ib]; if (A && B && distToSeg(x, y, A.left, A.top, B.left, B.top) < 3.5) { bad = true; break; } }
+      if (!bad) return { x, y, onPath: false };
+    }
+    return null;
   }
 
   get spriteCount(): number {
@@ -361,6 +406,21 @@ function ambientTint(lum: number): number {
   const night = 1 - Math.min(1, lum / 0.5);  // 0(昼)..1(夜)
   const c = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
   return (c(b * (1 - night * 0.20)) << 16) | (c(b * (1 - night * 0.08)) << 8) | c(b * (1 + night * 0.12));
+}
+// 透视：野草按所在纵向位置(y%)缩放 —— 远(上,y小)显著小、近(下,y大)大，正向对齐背景纵深（消除远近一样大）。
+function perspScale(yPct: number): number {
+  const t = Math.max(0, Math.min(1, (yPct - 46) / 52)); // 46%(远)..98%(近)
+  return 0.4 + 1.15 * Math.pow(t, 1.15);
+}
+// 野草健康/色彩随机（乘法 tint）：偏黄绿(健康) / 偏枯褐(不健康) / 中性微暖
+function weedTint(h: number, s: number): number {
+  const amt = 0.10 + s * 0.16;
+  let r = 1, g = 1, b = 1;
+  if (h > 0.66) { r = 1 - amt * 0.15; g = 1 - amt * 0.5; b = 1 - amt; }   // 偏枯黄褐
+  else if (h < 0.4) { r = 1 - amt * 0.5; b = 1 - amt * 0.5; }             // 偏黄绿
+  else { b = 1 - amt * 0.4; }                                             // 中性微暖
+  const c = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
+  return (c(r) << 16) | (c(g) << 8) | c(b);
 }
 // 接地软阴影贴图：径向黑→透明，运行时缩成扁椭圆贴在植株根部
 function makeShadowTexture(): Texture {
