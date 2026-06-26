@@ -580,7 +580,7 @@ export class World {
     const avgMkt = CROP_KEYS.reduce((s, k) => s + (this.market[k] || 1), 0) / CROP_KEYS.length;
     const room = STOCK_CAP - stockN;
     const add = (ck: string, task: RobotTask, dest: { left: number; top: number }, value: number, urgency: number, workBat: number, res?: ResKey) => {
-      const power = workBat * carryMul + this.distTo(dest) * 0.012 * carryMul;
+      const power = workBat * 0.6 * carryMul + this.distTo(dest) * 0.01 * carryMul; // 耗电特征(降权重，避免压垮播种/翻耕等养护)，仍保留距离/载重感知
       out.push({ ck, task, dest, value, urgency, power, res, score: 0 });
     };
     for (const p of this.plots) {
@@ -598,8 +598,8 @@ export class World {
       if (p.malign >= 35) add('weedm', { kind: 'weed', label: '清除恶性草', plotId: p.id, workMs: 2800, bat: 9, atBuilding: false }, ap, 0.6, 1.4, 9);
       else if (p.weedProg >= 50 && this.hasYoung(p)) add('weed', { kind: 'weed', label: '除草', plotId: p.id, workMs: 1600, bat: 5, atBuilding: false }, ap, 0.3, 0.6, 5);
       if ((p.roadDmg || p.roadWeed > 0) && this.ai.funds >= 320) add('repair', { kind: 'repair', label: '修路', plotId: p.id, workMs: 1900, bat: 3, atBuilding: false }, ap, -0.6, 0.7, 3);
-      if (this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)) add('till', { kind: 'till', label: '翻耕整地', plotId: p.id, workMs: 1100, bat: 4, atBuilding: false }, ap, 0.4, 0.4 + idleR, 4);
-      if (this.plotTilled(p) && this.econ.seedStock > 0) add('plant', { kind: 'plant', label: '播种', plotId: p.id, workMs: 720, bat: 3, atBuilding: false }, ap, 9 * this.priceOf(this.chooseCrop()) / 1000 * 0.18, 0.5 + idleR, 3);
+      if (this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)) add('till', { kind: 'till', label: '翻耕整地', plotId: p.id, workMs: 1100, bat: 4, atBuilding: false }, ap, 0.9, 0.8 + idleR * 1.3, 4); // 闲置地越久越紧迫 → 及时翻耕复种
+      if (this.plotTilled(p) && this.econ.seedStock > 0) add('plant', { kind: 'plant', label: '播种', plotId: p.id, workMs: 720, bat: 3, atBuilding: false }, ap, 1.6, 0.9 + idleR * 1.3, 3); // 播种=投资未来收成，价值/紧迫足够高 → 不撂荒
     }
     // 经营：出售(行情高/库存陈/载重满 → 卖) vs 入库(行情低 → 囤等涨) —— 学习何时哪个划算
     if (stockN > 0) { const base = e.fresh * this.cropVal(e.stock); add('sell', { kind: 'sell', label: '去商店出售', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, base * Math.max(0, avgMkt - 1.0) / 1000 + base * e.decay / 1000 + carry * 1.5, carry * 2 + (e.decay >= 0.09 ? 1 : 0), 3); }
@@ -628,7 +628,12 @@ export class World {
     const b = this.brain;
     const powerSpent = Math.max(0, la.bat0 - this.robotBattery);
     const batGain = Math.max(0, this.robotBattery - la.bat0);
-    const r = (this.netWorth() - la.nw0) / 1000 - powerSpent * POWER_VALUE * 0.1 + batGain * POWER_VALUE * 0.02; // 净资产增量 − 耗电 + 充电价值
+    // 投资类(播种/翻耕/买种/买料/清枯)收益在「未来收成」、当下净资产不升甚至降(种子/料钱不计入 netWorth)→
+    // 若仍用净资产增量当回报，会把投资学成"亏本"→机器人不肯种地、撂荒。故投资类用其预期价值(value)作正向塑形回报。
+    const invest = la.ck === 'plant' || la.ck === 'till' || la.ck === 'buyseed' || la.ck === 'buyres' || la.ck === 'clear';
+    const r = invest
+      ? Math.max(0.4, la.value) - powerSpent * POWER_VALUE * 0.05
+      : (this.netWorth() - la.nw0) / 1000 - powerSpent * POWER_VALUE * 0.1 + batGain * POWER_VALUE * 0.02; // 其余按净资产增量 − 耗电 + 充电价值
     const pred = b.wValue * la.value + b.wUrgency * la.urgency - b.wPower * la.power + (b.kind[la.ck] || 0);
     const err = Math.max(-3, Math.min(3, r - pred)); // 误差截断 → 稳定
     const a = 0.015;
@@ -702,6 +707,10 @@ export class World {
   // 评估整块种植考核 → 各活株 plantQual = 行距评分 × 应季时机。混种时邻居含异种(物理拥挤)；过密→分低。
   private assessPlanting(p: Plot) {
     const grows = p.slots.filter((sl) => sl.phase === 'grow' && !sl.dead);
+    if (grows.length > 140) { // 密植(如小麦~400株)跳过 O(n²) 最近邻：均匀网格行距本就一致，质量由应季主导 → 防每次播种/收获卡顿一下
+      for (const sl of grows) sl.plantQual = +Math.max(0.2, this.seasonFit(sl.crop)).toFixed(3);
+      return;
+    }
     for (const sl of grows) {
       let nn = Infinity;
       for (const o of grows) { if (o === sl) continue; const d = Math.hypot(sl.pt.x - o.pt.x, sl.pt.y - o.pt.y); if (d < nn) nn = d; }
@@ -1027,9 +1036,11 @@ export class World {
       this.res.eco = Math.min(RES_MAX.eco, this.res.eco + 5);
       this.ai.q[crop] += 0.25 * ((this.priceOf(crop) - CROPS[crop].seed) - this.ai.q[crop]);
       this.ai.harvests += units;
-      // 学最优行距：质量低(过密)→种稀；质量满且株多→可更密
-      if (avgQ < 0.85) this.brain.densBias = +Math.max(-3, this.brain.densBias - 0.15).toFixed(3);
-      else if (avgQ > 0.97) this.brain.densBias = +Math.min(3, this.brain.densBias + 0.08).toFixed(3);
+      // 学最优行距(仅应季时学：离季的低分是季节造成、非行距)：质量低(过密拥挤)→种稀；质量回升→缓回理想但不超理想(densBias≤0)→ 不增精灵/卡顿，且收成封顶9单位、再密无益
+      if (this.seasonFit(crop) > 0.9) {
+        if (avgQ < 0.85) this.brain.densBias = +Math.max(-2, this.brain.densBias - 0.12).toFixed(3);
+        else if (avgQ > 0.97 && this.brain.densBias < 0) this.brain.densBias = +Math.min(0, this.brain.densBias + 0.06).toFixed(3);
+      }
       totUnits += units;
     }
     this.ai.trades++;
@@ -1045,7 +1056,7 @@ export class World {
     if (!p.slots.length || !p.slots.every((sl) => sl.phase === 'tilled')) return; // 仅整块已翻耕才播种（避免误伤在长作物）
     const crop = this.chooseCrop();
     const q = getQuad(plotId);
-    const pts = autoPoints(plotId, crop, q, (this.stress ? 3 : 0) + Math.round(this.brain.densBias)); // 学习的种植密度偏置(densBias) → 学最优行距
+    const pts = autoPoints(plotId, crop, q, (this.stress ? 3 : 0) + Math.min(0, Math.round(this.brain.densBias))); // densBias 只向「更稀」学(≤0)：理想密度已够繁茂，再密只增精灵不增产(收成封顶9单位)→ 限精灵数防卡顿
     p.slots = pts.map((pt) => {
       const gh = (((Math.round(pt.x * 7.3 + pt.y * 13.1) % 100) + 100) % 100) / 100;
       const rate = 0.6 + gh * 0.8;
