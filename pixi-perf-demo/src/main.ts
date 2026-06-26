@@ -67,6 +67,7 @@ async function boot() {
     ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], // 毛茛类：幼苗→抽茎→开黄花→结实枯黄
     ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'],
     ['weed_10_baby', 'weed_10_baby_grow', 'weed_10_mature'],
+    ['weed_11_baby', 'weed_11_grow', 'weed_11_flower', 'weed_11_mature'], // 鬼针草类：幼苗→抽茎→开白花→结刺果
   ];
   const weedTypes = (await Promise.all(
     WEED_STAGE_FILES.map(async (files) => {
