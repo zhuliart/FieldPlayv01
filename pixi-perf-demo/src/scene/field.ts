@@ -36,6 +36,9 @@ export interface WeedKind {
   nearWater: boolean;                         // 喜水（weed_8）
 }
 
+// 水源位置（左下角，% 坐标，与 BASE_CORNERS 同系）—— 喜水野草(weed_8)在此成片密生。要挪改这一处即可。
+const WATER_SRC = { x: 9, y: 89 };
+
 // 地块层：12 个可点多边形（点击=浇水）+ 全田作物精灵（共享图集 → 合批）。
 // 含逐项移植的「倒伏（lodging）随机机制」与「应激滤镜（旱黄/冻蓝/涝暗/枯褐/过熟褪色）」。
 export class Field {
@@ -149,21 +152,16 @@ export class Field {
     const quads = Array.from({ length: 12 }, (_, i) => getQuad(i));
     const nodes = world.roadNet?.nodes ?? [];
     const edges = world.roadNet?.edges ?? [];
-    const TARGET = 80;
-    let placed = 0;
-    for (let a = 1; placed < TARGET && a < TARGET * 8; a++) {
-      const gx = 1 + wildHash(a, 1) * 98;   // 横向 1..99 %
-      const gy = 50 + wildHash(a, 2) * 49;  // 纵向 50..99 %（地面带）
-      if (quads.some((q) => pointInQuad(gx, gy, q))) continue; // 落在田块内→留给田内杂草
-      // onPath：到任一巡田路边(节点连线段)够近 → 长在机器人巡田路上，会被经过的机器人拔/压除
-      let onPath = false;
-      for (const [ia, ib] of edges) {
-        const A = nodes[ia], B = nodes[ib];
-        if (A && B && distToSeg(gx, gy, A.left, A.top, B.left, B.top) < 3.5) { onPath = true; break; }
-      }
-      const pool = onPath ? this.roadKinds : this.wildKinds; // 路上用 onRoad 类(车前草/蛇莓/恶性)，开阔野地用 inWild 类
-      if (pool.length === 0) continue;
-      const kind = this.kinds[pool[Math.floor(wildHash(a, 3) * pool.length) % pool.length]];
+    const inField = (x: number, y: number) => quads.some((q) => pointInQuad(x, y, q));
+    const onPathOf = (x: number, y: number): boolean => {
+      for (const [ia, ib] of edges) { const A = nodes[ia], B = nodes[ib]; if (A && B && distToSeg(x, y, A.left, A.top, B.left, B.top) < 3.5) return true; }
+      return false;
+    };
+    // 落单株野草：避开田块/地面带外，按类型尺寸层级与 onPath 设定
+    const spawn = (gx: number, gy: number, ki: number, h: number): boolean => {
+      if (gx < 1 || gx > 99 || gy < 50 || gy > 99 || inField(gx, gy)) return false;
+      const kind = this.kinds[ki];
+      const onPath = onPathOf(gx, gy);
       const s = new Sprite(kind.stages[0]);
       s.anchor.set(0.5, 0.99);
       s.position.set(pctX(gx), pctY(gy));
@@ -171,12 +169,41 @@ export class Field {
       s.visible = false;
       this.cropLayer.addChild(s);
       const depthScale = 0.55 + (gy / 100) * 0.85;
-      const sizeJit = 0.75 + wildHash(a, 4) * 0.7;
+      const sizeJit = 0.75 + wildHash(h, 4) * 0.7;
       const targetH = kind.sizeH * depthScale * sizeJit; // 按类型尺寸层级
-      // 初始成熟度参差(野地本就长期无人打理)；onPath 的起步低些(常被压)
-      const prog = onPath ? wildHash(a, 6) * 18 : 12 + wildHash(a, 6) * 64;
+      const prog = onPath ? wildHash(h, 6) * 18 : 12 + wildHash(h, 6) * 64; // onPath 起步低(常被压)
       this.wildRecs.push({ sprite: s, kind, targetH, cur: -1, onPath, prog });
-      placed++;
+      return true;
+    };
+    // 簇生：以 (cx,cy) 为中心按数量 n 撒同类成簇（n=1 即单株）
+    const cluster = (cx: number, cy: number, ki: number, n: number, base: number) => {
+      for (let j = 0; j < n; j++) {
+        const h = base * 23 + j;
+        spawn(j ? cx + (wildHash(h, 1) - 0.5) * 7 : cx, j ? cy + (wildHash(h, 2) - 0.5) * 4.5 : cy, ki, h);
+      }
+    };
+    // 喜水成片（rule4）：水源角附近密集播 nearWater 类(weed_8) 几大簇
+    const waterKi = this.kinds.findIndex((k) => k.nearWater && k.inWild);
+    if (waterKi >= 0) {
+      for (let c = 0; c < 6; c++) {
+        const cx = WATER_SRC.x + (wildHash(901 + c, 1) - 0.5) * 20;
+        const cy = WATER_SRC.y + (wildHash(901 + c, 2) - 0.5) * 11;
+        cluster(cx, cy, waterKi, 4, 901 + c);
+      }
+    }
+    // 通用散布：patch 类成簇(3~4)、single 单株、mix 1~2（rule5/6/7）
+    let placed = this.wildRecs.length;
+    for (let a = 1; placed < 130 && a < 800; a++) {
+      const gx = 1 + wildHash(a, 1) * 98, gy = 50 + wildHash(a, 2) * 49;
+      if (inField(gx, gy)) continue;
+      const pool = onPathOf(gx, gy) ? this.roadKinds : this.wildKinds; // 路上用 onRoad 类(车前草/蛇莓/恶性)，开阔野地用 inWild 类
+      if (pool.length === 0) continue;
+      const ki = pool[Math.floor(wildHash(a, 3) * pool.length) % pool.length];
+      const sp = this.kinds[ki].spread;
+      const n = sp === 'single' ? 1 : sp === 'patch' ? 3 + Math.floor(wildHash(a, 7) * 2) : 1 + Math.floor(wildHash(a, 7) * 2);
+      const before = this.wildRecs.length;
+      cluster(gx, gy, ki, n, a);
+      placed += this.wildRecs.length - before;
     }
   }
 
