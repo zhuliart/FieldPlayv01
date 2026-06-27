@@ -67,6 +67,7 @@
       @keyframes fpBob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
       @keyframes fpSway { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(2deg); } }
       @keyframes fpTwinkle { 0%, 100% { opacity: 0.78; } 50% { opacity: 1; } }
+      @keyframes fpRotateNudge { 0%, 60%, 100% { transform: rotate(0deg); } 30% { transform: rotate(-82deg); } }
 
       /* 首屏加载提示 */
       #fp-boot {
@@ -87,6 +88,34 @@
     <div id="fp-boot">铁娃子果蔬园 · 加载中…</div>
     <div id="fp-wrap">
       <div id="fp-root"></div>
+    </div>
+    <!-- 竖屏提示（非阻断）：手机竖屏时由 stage.ts fitBoard 显示，旋转到横屏自动消失 -->
+    <div
+      id="fp-rotate-hint"
+      style="
+        display: none;
+        position: fixed;
+        left: 50%;
+        bottom: 10px;
+        transform: translateX(-50%);
+        z-index: 9998;
+        align-items: center;
+        gap: 7px;
+        background: rgba(11, 24, 32, 0.86);
+        color: #eaf6e0;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        padding: 8px 16px;
+        border-radius: 22px;
+        border: 1px solid rgba(176, 134, 63, 0.5);
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+        pointer-events: none;
+        white-space: nowrap;
+      "
+    >
+      <span style="font-size: 18px; animation: fpRotateNudge 1.8s ease-in-out infinite; display: inline-block">🔄</span>
+      旋转手机至横屏，体验更佳
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
