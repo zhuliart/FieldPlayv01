@@ -1442,9 +1442,18 @@ export class World {
 
   weatherIntensity(): number {
     if (!isDisaster(this.weather.type)) {
-      // 阴天/小雨：给一个柔和常量强度，驱动背景天气层淡入
+      // 阴天/小雨：给一个柔和常量强度，驱动作物重打光/生长等玩法（背景另用 bgWeatherIntensity）
       return this.weather.type === 'clear' ? 0 : 0.6;
     }
+    return wxIntensity(this.weatherProg());
+  }
+
+  // 背景层专用强度：阴天/小雨等「稳态非灾害」天气，背景应「完整」显示该天气的天空场景，
+  // 不能像玩法那样只给 0.6 → 否则会常驻把 40% 的「晴空场景」混进来，晴空与阴云两套天空叠在一起、
+  // 山脊/云团错位 → 看起来像两张图重叠发晕（用户实测）。灾害(雨/旱/霜)仍用渐变强度，保留风暴渐起渐消的过渡。
+  bgWeatherIntensity(): number {
+    if (this.weather.type === 'clear') return 0;
+    if (!isDisaster(this.weather.type)) return 1; // 阴天/小雨：满强度 → 背景只显该天气场景，无晴空层穿透
     return wxIntensity(this.weatherProg());
   }
 

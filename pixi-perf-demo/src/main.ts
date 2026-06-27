@@ -218,7 +218,7 @@ async function boot() {
       else particles.fert(b.plotId);
     }
 
-    background.update(world.tod, world.weather.type as WeatherType, world.weatherIntensity(), world.toggles.bgFade, dtMS);
+    background.update(world.tod, world.weather.type as WeatherType, world.bgWeatherIntensity(), world.toggles.bgFade, dtMS);
     weatherOverlay.update(world, dtMS);
     field.update(world, dtMS);
     robot.update(world, dtMS);
