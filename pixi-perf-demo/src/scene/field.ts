@@ -95,7 +95,7 @@ export class Field {
 
   private mkShadow(): Sprite {
     const s = new Sprite(this.shadowTex);
-    s.anchor.set(0.5, 0.5);
+    s.anchor.set(SH_ANCHOR_X, 0.5); // 锚点=贴图近端浓团(接地点) → 旋转/缩放时根部不动、只有尾巴摆向地面
     s.visible = false;
     this.shadowLayer.addChild(s);
     return s;
@@ -315,7 +315,6 @@ export class Field {
     // 接地阴影强度对齐背景：随天气「定向光强度」(晴/晴夜强、阴雨弱)，夜里仅轻微减弱（晴夜有月投影仍强）
     const shadowAlpha = (0.2 + 0.52 * (SHADOW_CLEARNESS[wx] ?? 0.5)) * (0.85 + 0.15 * lum);
     this.lastShadowAlpha = shadowAlpha;
-    const SHTEX = this.shadowTex.width || 64;
 
     for (const rec of this.recs) {
       const plot = world.plots[rec.plotId];
@@ -394,7 +393,7 @@ export class Field {
       // 上层(下一阶段)仅在每阶段最后 30% 才淡入 → 其余 70% 完全只显当前阶段(不透明)，
       // 消除"整株半透明"观感（此前 alpha=frac 让上层贴图常年半透叠在下层上，露出背景而发虚）。
       b.alpha = stage >= 4 ? 0 : Math.max(0, (frac - 0.7) / 0.3);
-      setShadow(rec.shadow, a.x, a.y, heightPx, shadowAlpha * 0.72, SHTEX); // 作物接地阴影（略淡，密植不糊成黑块）
+      setShadow(rec.shadow, a.x, a.y, heightPx, a.texture.width * a.scale.x, shadowAlpha * 0.72); // 作物接地定向阴影（按冠幅取宽、株高取长 → 接地+投射）
     }
 
     // —— 杂草：按地块 weedProg 逐株出现(蔓延)，按生长进度换阶段贴图(幼→中→熟)并连续长高；跟随昼夜明暗 ——
@@ -488,24 +487,49 @@ function weedTint(h: number, s: number): number {
   const c = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
   return (c(r) << 16) | (c(g) << 8) | c(b);
 }
-// 接地软阴影贴图：径向黑→透明，运行时缩成扁椭圆贴在植株根部
+// —— 接地定向阴影（写实化重写）——
+// 旧版"整株按株高画一枚对称扁椭圆、略偏右下"无法表达"接地点不动、影子只把尾巴甩向地面"，
+// 配合默认的 RT 整层平移更显悬浮。现：每株一枚"彗星"软阴影——近端浓团贴根=接地(contact AO)，
+// 主体沿固定光向(左上→右下，匹配背景烘焙树影)延展=投射(cast)；长随株高(越高影越长)、宽随冠幅、浓随天气/昼夜。
+// 锚点钉在浓团(接地点) → 旋转/缩放时根部不动，只有远端尾巴摆向地面，从根本上消除"悬浮"。
+const SH_TEX_W = 128, SH_TEX_H = 64;
+const SH_ANCHOR_X = 0.22;  // 浓团(接地点)在贴图长轴 22% 处：少量在根后(软接地)、多数向光背面延展
+const SH_ANGLE = 0.42;     // 投射方向(rad,≈24°)：右下对角，匹配背景树影方向
+const SH_FOOT = 0.46;      // 渲染宽→实际冠幅(贴图含透明边，打折)
+const SH_WID = 0.92;       // 冠幅→阴影宽
+const SH_LEN_BASE = 0.6;   // 冠幅→基础长(矮株也有接地团)
+const SH_LEN_H = 0.5;      // 株高→附加长度(高株投影更长)
+
+// 彗星软阴影贴图：长轴 128 × 短轴 64；近端(≈22%处)浓团=接地，向远端渐隐成尾=投射。
 function makeShadowTexture(): Texture {
+  const W = SH_TEX_W, H = SH_TEX_H;
   const cv = document.createElement('canvas');
-  cv.width = 64; cv.height = 64;
+  cv.width = W; cv.height = H;
   const ctx = cv.getContext('2d')!;
-  const g = ctx.createRadialGradient(32, 32, 1, 32, 32, 31);
-  g.addColorStop(0, 'rgba(0,0,0,0.60)');
-  g.addColorStop(0.55, 'rgba(0,0,0,0.34)');
+  // 接地浓团：径向渐变，圆心在长轴 22%(接地点)
+  const cx = W * SH_ANCHOR_X, cy = H * 0.5;
+  const g = ctx.createRadialGradient(cx, cy, 1, cx, cy, H * 0.72);
+  g.addColorStop(0, 'rgba(0,0,0,0.64)');
+  g.addColorStop(0.5, 'rgba(0,0,0,0.30)');
   g.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = g;
-  ctx.beginPath(); ctx.arc(32, 32, 31, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // 投射尾巴：远端再叠一片更淡更扁的椭圆 → 整体呈水滴/彗星形向投射方向拖出
+  const tx = W * 0.60;
+  const g2 = ctx.createRadialGradient(tx, cy, 1, tx, cy, H * 0.44);
+  g2.addColorStop(0, 'rgba(0,0,0,0.20)');
+  g2.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g2; ctx.fillRect(0, 0, W, H);
   return Texture.from(cv);
 }
-// 把阴影椭圆贴到植株根 (rx,ry)：宽随株高、压扁，略向右下偏（光从左上 → 投影落右下，对齐背景树影方向）
-function setShadow(sh: Sprite, rx: number, ry: number, hPx: number, alpha: number, tex: number) {
+// 把彗星阴影钉在植株根 (rootX,rootY)：锚点=接地浓团，旋到右下；长随株高、宽随冠幅 renderW。
+function setShadow(sh: Sprite, rootX: number, rootY: number, hPx: number, renderW: number, alpha: number) {
   sh.visible = true;
-  sh.position.set(rx + hPx * 0.17, ry + hPx * 0.03); // 月在左上 → 投影落右下；偏移加大
-  sh.scale.set((hPx * 0.98) / tex, (hPx * 0.34) / tex); // 投影继续调大
+  const foot = Math.max(4, renderW * SH_FOOT);
+  const len = Math.min(hPx * 1.25, foot * SH_LEN_BASE + hPx * SH_LEN_H); // 高株投影更长，封顶不过界
+  const wid = Math.max(foot * SH_WID, len * 0.34);                       // 宽度下限：矮株也不至于细成线
+  sh.rotation = SH_ANGLE;
+  sh.position.set(rootX, rootY + hPx * 0.01); // 贴根（浓团即接地点，几乎不偏移 → 牢牢咬住地面）
+  sh.scale.set(len / SH_TEX_W, wid / SH_TEX_H);
   sh.alpha = alpha;
 }
 // 渲染一株野草：连续生长(补偿阶段relH，消除换阶段突然变大) + 枯萎转黑/缩/倒 + 接地阴影。setTex(stage) 按需换贴图。
@@ -523,7 +547,7 @@ function drawWeed(sp: Sprite, sh: Sprite, kind: WeedKind, targetH: number, life:
   const dark = wither > 0 ? lerpColor(0xffffff, 0x241d14, Math.min(1, wither) * 0.9) : 0xffffff; // 枯萎转黑(rule4)
   sp.tint = multiplyColor(multiplyColor(relight, colorVar), dark);
   sp.alpha = fade;
-  setShadow(sh, sp.x, sp.y, plantH, shadowAlpha * (1 - wither * 0.55), 64);
+  setShadow(sh, sp.x, sp.y, plantH, sp.texture.width * sp.scale.x, shadowAlpha * (1 - wither * 0.55));
 }
 function lerpColor(a: number, b: number, t: number): number {
   const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;

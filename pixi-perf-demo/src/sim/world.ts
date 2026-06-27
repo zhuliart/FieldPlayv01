@@ -267,7 +267,7 @@ export class World {
     dayTint: true,
     overlays: true,
     cropRelight: true,
-    cropFullShadow: true,
+    cropFullShadow: false, // 默认每株「接地定向阴影」(写实+更省GPU)；开=RT冠层整层投影(较重，会整体平移而略显悬浮)
   };
 
   // 本帧产生的粒子爆发事件（renderer 消费后清空）
