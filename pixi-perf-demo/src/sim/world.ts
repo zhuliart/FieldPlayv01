@@ -1248,17 +1248,12 @@ export class World {
   // AI 经济结算：闲置土地税 + 低资金设备老化 + 破产重置
   private aiEconomyTick() {
     const ai = this.ai;
-    // 闲置土地税：仅当大量地块闲置（>7）才随机抽 3 块课税，轮换
+    // 闲置土地税：持续闲置(idle>IDLE_LIMIT)≥3 块即开始课税，块数越多税越重 → 给"撂荒"实打实的经济惩罚
+    // （旧版要 >7 块才课税 → 12 块地撂荒一半也不交税；且课税后把 idle 清零 → 翻耕紧迫度 idleR 被打回 0、越交税越不想耕，自相矛盾）。
+    // 现：不清 idle，让其持续累积 → 翻耕/播种紧迫度保持高位；机器人一旦复耕复种→该地转生产→slowTick 自动清零 idle→自然停税。
     const overIds = this.plots.filter((p) => p.idle > IDLE_LIMIT).map((p) => p.id);
-    if (overIds.length > 7 && Math.random() < 0.22) {
-      const pool = overIds.slice();
-      let hit = 0;
-      for (let n = 0; n < 3 && pool.length; n++) {
-        const id = pool.splice((Math.random() * pool.length) | 0, 1)[0];
-        const pp = this.plots[id];
-        if (pp) pp.idle = 0; // 课税后重置 → 轮换
-        hit++;
-      }
+    if (overIds.length >= 3 && Math.random() < 0.35) {
+      const hit = Math.min(overIds.length, 5);
       const tax = Math.round(hit * (IDLE_TAX * (0.75 + Math.random() * 0.6)));
       ai.funds -= tax;
       ai.idleTaxPaid += tax;
