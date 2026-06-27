@@ -948,6 +948,10 @@ export class World {
   routeTo(from: { left: number; top: number }, to: { left: number; top: number }): { left: number; top: number }[] {
     const rn = this.roadNet;
     const N = rn.nodes.length;
+    // 已基本到达目的地：直接到点，不要绕去最近路网节点再折返。
+    // 修复"充电结束在基站前来回抖动"：基站常不在某个路网节点上，routeTo(站,站) 旧逻辑会返回 [站,最近节点,站]
+    // 的"出门又回来"路径；ε-greedy 在满电时偶尔反复选 idle/充电 → 机器人就在基站与最近节点间反复横跳。
+    if (Math.hypot(to.left - from.left, to.top - from.top) < 1.2) return [to];
     if (N === 0) return [from, to];
     const snap = (p: { left: number; top: number }) => {
       let bi = 0, bd = Infinity;
