@@ -598,15 +598,25 @@ export class World {
       if (p.malign >= 35) add('weedm', { kind: 'weed', label: '清除恶性草', plotId: p.id, workMs: 2800, bat: 9, atBuilding: false }, ap, 0.6, 1.4, 9);
       else if (p.weedProg >= 50 && this.hasYoung(p)) add('weed', { kind: 'weed', label: '除草', plotId: p.id, workMs: 1600, bat: 5, atBuilding: false }, ap, 0.3, 0.6, 5);
       if ((p.roadDmg || p.roadWeed > 0) && this.ai.funds >= 320) add('repair', { kind: 'repair', label: '修路', plotId: p.id, workMs: 1900, bat: 3, atBuilding: false }, ap, -0.6, 0.7, 3);
-      if (this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)) add('till', { kind: 'till', label: '翻耕整地', plotId: p.id, workMs: 1100, bat: 4, atBuilding: false }, ap, 0.9, 0.8 + idleR * 1.3, 4); // 闲置地越久越紧迫 → 及时翻耕复种
+      if (this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)) add('till', { kind: 'till', label: '翻耕整地', plotId: p.id, workMs: 1100, bat: 4, atBuilding: false }, ap, 1.1, 1.0 + idleR * 1.3, 4); // 空出即翻耕(基础紧迫够高、不必等闲置攒够)；越久越紧迫 → 及时复种
       if (this.plotTilled(p) && this.econ.seedStock > 0) add('plant', { kind: 'plant', label: '播种', plotId: p.id, workMs: 720, bat: 3, atBuilding: false }, ap, 1.6, 0.9 + idleR * 1.3, 3); // 播种=投资未来收成，价值/紧迫足够高 → 不撂荒
     }
     // 经营：出售(行情高/库存陈/载重满 → 卖) vs 入库(行情低 → 囤等涨) —— 学习何时哪个划算
     if (stockN > 0) { const base = e.fresh * this.cropVal(e.stock); add('sell', { kind: 'sell', label: '去商店出售', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, base * Math.max(0, avgMkt - 1.0) / 1000 + base * e.decay / 1000 + carry * 1.5, carry * 2 + (e.decay >= 0.09 ? 1 : 0), 3); }
     if (stockN >= 3) { const base = e.fresh * this.cropVal(e.stock); add('store', { kind: 'store', label: '去仓库入库', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.warehouse, base * e.decay / 1000 + (avgMkt < 1.0 ? this.ai.storeBias * 2.2 : -0.5) + carry * 1.2, carry * 1.5, 3); }
     if (whN > 0) add('sellwh', { kind: 'sellwh', label: '去商店清仓', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, this.cropVal(e.wh) * Math.max(0, avgMkt - 1.0) / 1000 + (avgMkt >= 1.05 ? 1 : 0), avgMkt >= 1.1 ? 1.2 : 0.2, 3);
-    const plantableExists = this.plots.some((p) => this.plotTilled(p));
-    if (plantableExists && this.econ.seedStock < 3) { const cost = this.seedBatchCost(); if (this.ai.funds >= cost) add('buyseed', { kind: 'buy', label: '采购种子', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, 1.0 + (SEED_BASE - cost) / 1000, 0.6, 3); }
+    // 种子供给：按「待复种地块(空地+已翻耕)」的需求采购 —— 缺口越大越紧迫，行情仅微调价值不致其转负。
+    // 修复"翻耕好的地因没种子而长期撂荒"：有地等着种、种子又不够时，采购种子是高紧迫动作而非可有可无的小事
+    // （旧版 urgency 固定 0.6、行情高时 value 转负 → buyseed 常年打不过其它任务 → 永远缺种 → 地一直空着）。
+    let replantDemand = 0;
+    for (const p of this.plots) if (this.plotHasEmpty(p) || this.plotTilled(p)) replantDemand++;
+    if (replantDemand > 0 && this.econ.seedStock < replantDemand + 1) {
+      const cost = this.seedBatchCost();
+      if (this.ai.funds >= cost) {
+        const gap = replantDemand + 1 - this.econ.seedStock; // 种子缺口(地块数)
+        add('buyseed', { kind: 'buy', label: '采购种子', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, 1.4 + Math.max(-0.3, (SEED_BASE - cost) / 1000), 1.2 + Math.min(2.2, gap * 0.7), 3);
+      }
+    }
     const low = this.lowestRes();
     if (low && this.ai.funds > 200) { const ratio = this.res[low] / RES_MAX[low]; add('buyres', { kind: 'buy', label: '采购' + RES_NAME[low], plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, 0.4, Math.min(2, (0.2 - ratio) * 6 + 0.4), 3, low); }
     add('charge', { kind: 'charge', label: '返回充电', plotId: -1, workMs: 0, bat: 0, atBuilding: true }, MAP.station, 0, Math.max(0, (62 - this.robotBattery) / 18), 0);
@@ -1636,7 +1646,7 @@ function emap(): Record<CropKey, number> {
 }
 
 function freshEcon(): EconState {
-  return { stock: emap(), fresh: 1, wh: emap(), whBasis: 0, decay: 0.05, fee: 3, seedStock: 0 };
+  return { stock: emap(), fresh: 1, wh: emap(), whBasis: 0, decay: 0.05, fee: 3, seedStock: 6 }; // 起步给少量种子 → 首轮复种立即可播，不必空等经济爬升
 }
 
 function freshPlayer(): PlayerRes {
