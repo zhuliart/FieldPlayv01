@@ -250,7 +250,8 @@ async function boot() {
 
   document.getElementById('fp-boot')?.remove();
 
-  // —— 毛玻璃补全背景：节流截取当前场景 → 设为整屏模糊背景（仅在有黑边时启用，零黑边时关闭省开销）——
+  // —— 黑边「边缘采样补全」：取当前场景 顶/中/底 边缘色 → 竖向渐变铺满整屏（仅有黑边时启用，省开销）——
+  // 上黑边显示场景顶边色、下黑边显示底边色 → 与画面边缘同色相接，无接缝/无白边，随昼夜自动变。
   const backdropEl = document.getElementById('fp-backdrop') as HTMLDivElement | null;
   let backdropAcc = 9999; // 首帧即刷
   const updateBackdrop = () => {
@@ -259,11 +260,16 @@ async function boot() {
     const barred = Math.abs(vw / vh - STAGE_W / STAGE_H) > 0.02; // 视口非 16:9 → 有黑边
     if (!barred) { if (backdropEl.style.opacity !== '0') backdropEl.style.opacity = '0'; return; }
     try {
-      // 低分辨率截取（背景重度模糊，画质无所谓）→ extract 渲染 + jpeg 编码都更省，弱化每 700ms 的开销
-      const c = app.renderer.extract.canvas({ target: app.stage, resolution: 0.35 }) as { toDataURL?: (t: string, q: number) => string };
-      const url = c.toDataURL?.('image/jpeg', 0.5);
-      if (url) { backdropEl.style.backgroundImage = `url(${url})`; backdropEl.style.opacity = '1'; }
-    } catch { /* extract 失败 → 保留 #fp-wrap 渐变兜底 */ }
+      // 极低分辨率截取（只为取边缘色）→ extract 几乎零开销
+      const c = app.renderer.extract.canvas({ target: app.stage, resolution: 0.08 }) as HTMLCanvasElement;
+      const ctx = c.getContext('2d');
+      if (!ctx || !c.width || !c.height) return;
+      const cx = Math.max(0, (c.width / 2) | 0);
+      const px = (y: number) => { const d = ctx.getImageData(cx, Math.max(0, Math.min(c.height - 1, y)), 1, 1).data; return `rgb(${d[0]},${d[1]},${d[2]})`; };
+      const top = px(1), mid = px((c.height / 2) | 0), bot = px(c.height - 2);
+      backdropEl.style.background = `linear-gradient(${top} 0%, ${mid} 50%, ${bot} 100%)`;
+      backdropEl.style.opacity = '1';
+    } catch { /* extract/读像素失败 → 保留 #fp-wrap 渐变兜底 */ }
   };
 
   // —— 主循环 ——

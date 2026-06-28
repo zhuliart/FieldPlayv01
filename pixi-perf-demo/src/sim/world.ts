@@ -151,7 +151,7 @@ const BRAIN_SAVE_V = 2; // schema 版本：结构变更 +1 自动作废旧档。
 const AI_START = 2500;
 const IDLE_LIMIT = 45; // 闲置达此 tick 数才进入课税池
 const IDLE_TAX = 44; // 单块闲置税基（每次随机浮动）
-const BANKRUPT = -20000; // 资金跌破即破产重置
+const BANKRUPT = -3000; // 资金跌破即破产重置
 
 // —— 学习型机器人新机制 ——
 const STOCK_CAP = 30; // 随身携带收获上限(单位)：满了不能再收，必须出售/入库（迫使学习何时清货）
