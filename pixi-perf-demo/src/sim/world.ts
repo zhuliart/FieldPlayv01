@@ -191,10 +191,19 @@ interface Cand {
 type ResKey = 'water' | 'eco';
 const RES_MAX: Record<ResKey, number> = { water: 120, eco: 80 };
 const RES_NAME: Record<ResKey, string> = { water: '水', eco: '生态肥' };
-// 任务 → 机器人作业模块盒配色（robot.ts 读 module）
+// 任务 → 机器人作业配件模块（robot.ts 读 module 画对应工具图标）。各任务用专属配件，便于一眼看出在干什么。
 const MOD_FOR: Record<string, string> = {
-  water: 'water', drain: 'water', fert: 'fert', cover: 'fert', harvest: 'harvest',
-  clear: 'fert', weed: 'fert', till: 'harvest', plant: 'fert', repair: 'patrol', buy: 'patrol', sell: 'patrol', sellwh: 'patrol', store: 'patrol', charge: 'patrol', idle: 'patrol',
+  water: 'water', drain: 'water',     // 浇水/排水 → 喷头水滴
+  fert: 'fert',                       // 施肥 → 颗粒肥
+  cover: 'cover',                     // 覆盖保温 → 篷布
+  harvest: 'harvest',                 // 采收 → 收获篮
+  clear: 'clear',                     // 清枯 → 耙
+  weed: 'weed',                       // 除草 → 除草剪
+  till: 'till',                       // 翻耕 → 旋耕齿
+  plant: 'plant',                     // 播种 → 幼苗
+  repair: 'repair',                   // 修路 → 螺母扳手
+  buy: 'haul', sell: 'haul', sellwh: 'haul', store: 'haul', // 买卖/出入库 → 货箱
+  charge: 'charge', idle: 'charge',   // 充电/待命 → 闪电
 };
 
 // 农场坐标：四川巴中市南江县南江镇 ≈ 32.353N, 106.843E（实时天气锚点）
@@ -795,7 +804,7 @@ export class World {
     this.rPathIdx = 0;
     this.rDidTask = false;
     this.rPhase = 'move';
-    this.robot.module = MOD_FOR[task.kind] || 'patrol';
+    this.robot.module = MOD_FOR[task.kind] || null;
   }
 
   private robotMove(dtMS: number) {

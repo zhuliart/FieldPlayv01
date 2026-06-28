@@ -214,6 +214,8 @@ async function boot() {
   let hideHint: HTMLDivElement | null = null;
   const toggleUi = () => {
     const hidden = gameHud.toggleUi();
+    stats.el.style.display = hidden ? 'none' : '';   // FPS/性能表（右下）
+    hud.el.style.display = hidden ? 'none' : '';      // 性能验证面板（压测档/混合模式/重置等）
     if (hideHint) { hideHint.remove(); hideHint = null; }
     if (hidden) { // 隐藏时给一条会自动消失的提示（独立于 HUD，不随其隐藏），告知如何恢复
       const hint = document.createElement('div');
