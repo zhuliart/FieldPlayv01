@@ -24,12 +24,13 @@
         width: 100%;
         height: 100%;
         overflow: hidden;
-        background: #0b1820; /* 夜底 letterbox（设计令牌） */
+        background: #141d2b; /* letterbox 兜底底色（与下方画框渐变同调） */
         font-family: 'Noto Sans SC', system-ui, sans-serif;
         -webkit-font-smoothing: antialiased;
         touch-action: none;
       }
-      /* 固定 1280×720 设计舞台，居中 letterbox，由 stage.ts 的 fitBoard 等比缩放 */
+      /* 固定 1280×720 设计舞台，居中 letterbox，由 stage.ts 的 fitBoard 等比缩放。
+         黑边「美化」：竖向 天空→泥土 暗渐变（呼应场景上天下地）+ 四周渐暗暗角 → 留白像刻意的画框、非空洞。 */
       #fp-wrap {
         position: fixed;
         inset: 0;
@@ -37,7 +38,9 @@
         align-items: center;
         justify-content: center;
         overflow: hidden;
-        background: #0b1820;
+        background:
+          radial-gradient(135% 100% at 50% 42%, rgba(40, 58, 86, 0) 0%, rgba(8, 13, 21, 0.5) 76%, rgba(3, 6, 10, 0.85) 100%),
+          linear-gradient(#172339 0%, #161f2d 46%, #1d1913 100%);
       }
       #fp-root {
         position: relative;
@@ -48,6 +51,8 @@
         overflow: hidden;
         /* 天空渐变（设计令牌：舞台底） */
         background: linear-gradient(#5fb6ea 0%, #84c9ef 22%, #b6e0f4 40%, #d8eef6 50%);
+        /* 舞台外柔和投影 + 极淡描边 → 等比留白时舞台像被「画框」托起，而非浮在空洞上 */
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 22px 64px rgba(0, 0, 0, 0.55);
       }
       #fp-root canvas {
         position: absolute;
