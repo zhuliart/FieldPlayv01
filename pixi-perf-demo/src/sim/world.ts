@@ -144,7 +144,7 @@ const SEED: [CropKey, number][] = [
 ];
 
 // 学习成果存档 schema 版本：结构变更时 +1 → 旧档自动作废（不读、回落 fresh），防版本错配注入脏数据
-const BRAIN_SAVE_V = 1;
+const BRAIN_SAVE_V = 2; // schema 版本：结构变更 +1 自动作废旧档。v2=新增情境偏置 ctxKind(任务 B)
 
 // 经济常量（原样移植原型）
 const AI_START = 2500;
@@ -171,6 +171,7 @@ export interface BrainState {
   eps: number; // 探索率(随经验衰减)
   steps: number; // 决策步数
   netReward: number; // 累计净回报
+  ctxKind: Record<string, Record<string, number>>; // 情境化偏置：情境键(电量/载重/行情分桶) → (动作类型 → 学习偏置)。全局 kind 学共性、ctxKind 学情境差异
 }
 
 // 候选动作（大脑每步枚举全部可做的事，打分择优）
@@ -283,7 +284,7 @@ export class World {
   robotBattery = 86;
   private rPhase: 'decide' | 'move' | 'work' | 'charge' = 'decide';
   private rTask: RobotTask | null = null;
-  private rPend: { ck: string; value: number; urgency: number; power: number; nw0: number; bat0: number } | null = null; // 待结算动作(回报学习)
+  private rPend: { ck: string; value: number; urgency: number; power: number; nw0: number; bat0: number; ctx: string } | null = null; // 待结算动作(回报学习)；ctx=决策时情境键
   private rDest: { left: number; top: number } = { left: MAP.robotHome.left, top: MAP.robotHome.top };
   private rWork = 0;
   private rDidTask = false;
@@ -567,12 +568,27 @@ export class World {
     }
     const cands = this.candidates();
     const b = this.brain;
+    const ctx = this.contextKey();
+    const cb = b.ctxKind[ctx] || (b.ctxKind[ctx] = {}); // 当前情境的偏置表(按需建)
     let best = cands[0], bestScore = -Infinity;
     for (const c of cands) {
-      c.score = b.wValue * c.value + b.wUrgency * c.urgency - b.wPower * c.power + (b.kind[c.ck] || 0);
+      c.score = b.wValue * c.value + b.wUrgency * c.urgency - b.wPower * c.power
+              + (b.kind[c.ck] || 0)   // 全局偏置(学共性)
+              + (cb[c.ck] || 0);      // 情境偏置(学差异：低电量更想充电、满载更想清货…)
       if (c.score > bestScore) { bestScore = c.score; best = c; }
     }
     this.commit((Math.random() < b.eps) ? cands[(Math.random() * cands.length) | 0] : best); // ε-greedy
+  }
+
+  // 情境分桶 → 情境键(如 "b1c2m0")：电量/载重/行情各三档，最多 27 桶(字典稀疏，实际更少)。
+  // 粗粒度是刻意的——控制状态数、避免把连续量直接当 key 导致桶爆炸学不动。
+  private contextKey(): string {
+    const bat = this.robotBattery < 30 ? 0 : this.robotBattery < 70 ? 1 : 2;
+    const cf = this.carryFrac();
+    const carry = cf < 0.34 ? 0 : cf < 0.8 ? 1 : 2;
+    const avgMkt = CROP_KEYS.reduce((s, k) => s + (this.market[k] || 1), 0) / CROP_KEYS.length;
+    const mkt = avgMkt < 0.95 ? 0 : avgMkt < 1.1 ? 1 : 2;
+    return `b${bat}c${carry}m${mkt}`;
   }
 
   // 枚举候选动作（含收益/紧迫/耗电特征）。耗电 = 作业电×载重倍率 + 距离×载重 → 距离近、空载更省电。
@@ -635,7 +651,7 @@ export class World {
   private commit(c: Cand) {
     if (c.ck === 'buyseed') this.buySeed = true;
     else if (c.ck === 'buyres') { this.buyResKey = c.res || null; this.buySeed = false; }
-    this.rPend = { ck: c.ck, value: c.value, urgency: c.urgency, power: c.power, nw0: this.netWorth(), bat0: this.robotBattery };
+    this.rPend = { ck: c.ck, value: c.value, urgency: c.urgency, power: c.power, nw0: this.netWorth(), bat0: this.robotBattery, ctx: this.contextKey() };
     this.startTask(c.task, c.dest);
   }
 
@@ -657,7 +673,9 @@ export class World {
     b.wValue = clampW(b.wValue + a * err * la.value);
     b.wUrgency = clampW(b.wUrgency + a * err * la.urgency);
     b.wPower = clampW(b.wPower - a * err * la.power); // power 负向特征
-    b.kind[la.ck] = Math.max(-3, Math.min(3, (b.kind[la.ck] || 0) + a * err));
+    b.kind[la.ck] = Math.max(-3, Math.min(3, (b.kind[la.ck] || 0) + a * err)); // 全局偏置(共性)
+    const cb = b.ctxKind[la.ctx] || (b.ctxKind[la.ctx] = {}); // 情境偏置(差异)：同一动作在不同情境下学到不同价值
+    cb[la.ck] = Math.max(-3, Math.min(3, (cb[la.ck] || 0) + a * err));
     b.steps++;
     b.netReward += r;
     b.eps = Math.max(0.05, b.eps * 0.9992); // 探索率缓慢衰减 → 越学越笃定
@@ -1036,7 +1054,7 @@ export class World {
     try {
       const blob = {
         v: BRAIN_SAVE_V,
-        brain: this.brain,                  // 权重 wValue/wUrgency/wPower + 动作偏置 kind + densBias/eps/steps/netReward
+        brain: this.brain,                  // 权重 wValue/wUrgency/wPower + 全局偏置 kind + 情境偏置 ctxKind + densBias/eps/steps/netReward
         q: this.ai.q,                       // 各作物 Q（选种学习量）
         sellThreshold: this.ai.sellThreshold,
         storeBias: this.ai.storeBias,
@@ -1062,6 +1080,7 @@ export class World {
       if (Number.isFinite(b.steps)) this.brain.steps = b.steps;
       if (Number.isFinite(b.netReward)) this.brain.netReward = b.netReward;
       if (b.kind && typeof b.kind === 'object') this.brain.kind = sanitizeBias(b.kind); // 清洗：丢非有限数、clamp[-3,3]
+      if (b.ctxKind && typeof b.ctxKind === 'object') this.brain.ctxKind = sanitizeCtx(b.ctxKind); // 情境偏置：逐桶清洗(任务 B)
       if (s.q && typeof s.q === 'object') for (const k of CROP_KEYS) if (Number.isFinite(s.q[k])) this.ai.q[k] = s.q[k];
       if (Number.isFinite(s.sellThreshold)) this.ai.sellThreshold = Math.max(2, Math.min(9, s.sellThreshold));
       if (Number.isFinite(s.storeBias)) this.ai.storeBias = Math.max(0.1, Math.min(0.92, s.storeBias));
@@ -1718,7 +1737,7 @@ function freshPlayer(): PlayerRes {
 }
 
 function freshBrain(): BrainState {
-  return { wValue: 1, wUrgency: 1.1, wPower: 0.7, kind: {}, densBias: 0, eps: 0.22, steps: 0, netReward: 0 };
+  return { wValue: 1, wUrgency: 1.1, wPower: 0.7, kind: {}, densBias: 0, eps: 0.22, steps: 0, netReward: 0, ctxKind: {} };
 }
 
 // 数值 clamp + 三位小数（折损率/仓储费均值回归用）
@@ -1733,5 +1752,15 @@ function clampW(v: number): number { return Math.max(0.05, Math.min(4, +v.toFixe
 function sanitizeBias(o: Record<string, unknown>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const k in o) { const v = o[k]; if (typeof v === 'number' && Number.isFinite(v)) out[k] = Math.max(-3, Math.min(3, v)); }
+  return out;
+}
+
+// 清洗情境偏置表(载入存档用)：逐情境桶各自走 sanitizeBias，空桶丢弃 → 脏档不会注入 NaN 污染情境打分
+function sanitizeCtx(o: Record<string, unknown>): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {};
+  for (const k in o) {
+    const v = o[k];
+    if (v && typeof v === 'object') { const bucket = sanitizeBias(v as Record<string, unknown>); if (Object.keys(bucket).length) out[k] = bucket; }
+  }
   return out;
 }
