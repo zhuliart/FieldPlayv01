@@ -1,0 +1,495 @@
+{
+  "frames": {
+    "corn_leaf_curled_01": {
+      "frame": {
+        "x": 1208,
+        "y": 702,
+        "w": 203,
+        "h": 487
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 203,
+        "h": 487
+      },
+      "sourceSize": {
+        "w": 203,
+        "h": 487
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_leaf_curled_02": {
+      "frame": {
+        "x": 978,
+        "y": 702,
+        "w": 222,
+        "h": 488
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 222,
+        "h": 488
+      },
+      "sourceSize": {
+        "w": 222,
+        "h": 488
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_leaf_dry_01": {
+      "frame": {
+        "x": 678,
+        "y": 702,
+        "w": 292,
+        "h": 513
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 292,
+        "h": 513
+      },
+      "sourceSize": {
+        "w": 292,
+        "h": 513
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_leaf_dry_02": {
+      "frame": {
+        "x": 248,
+        "y": 702,
+        "w": 280,
+        "h": 531
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 280,
+        "h": 531
+      },
+      "sourceSize": {
+        "w": 280,
+        "h": 531
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_leaf_dry_03": {
+      "frame": {
+        "x": 4,
+        "y": 702,
+        "w": 236,
+        "h": 537
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 236,
+        "h": 537
+      },
+      "sourceSize": {
+        "w": 236,
+        "h": 537
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_leaf_healthy_01": {
+      "frame": {
+        "x": 302,
+        "y": 1247,
+        "w": 407,
+        "h": 320
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 407,
+        "h": 320
+      },
+      "sourceSize": {
+        "w": 407,
+        "h": 320
+      },
+      "anchor": {
+        "x": 0.96,
+        "y": 0.94
+      }
+    },
+    "corn_leaf_healthy_02": {
+      "frame": {
+        "x": 1419,
+        "y": 702,
+        "w": 230,
+        "h": 437
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 230,
+        "h": 437
+      },
+      "sourceSize": {
+        "w": 230,
+        "h": 437
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_leaf_healthy_03": {
+      "frame": {
+        "x": 1521,
+        "y": 1247,
+        "w": 406,
+        "h": 266
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 406,
+        "h": 266
+      },
+      "sourceSize": {
+        "w": 406,
+        "h": 266
+      },
+      "anchor": {
+        "x": 0.04,
+        "y": 0.94
+      }
+    },
+    "corn_leaf_yellow_01": {
+      "frame": {
+        "x": 1129,
+        "y": 1247,
+        "w": 384,
+        "h": 283
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 384,
+        "h": 283
+      },
+      "sourceSize": {
+        "w": 384,
+        "h": 283
+      },
+      "anchor": {
+        "x": 0.96,
+        "y": 0.94
+      }
+    },
+    "corn_leaf_yellow_02": {
+      "frame": {
+        "x": 1657,
+        "y": 702,
+        "w": 294,
+        "h": 414
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 294,
+        "h": 414
+      },
+      "sourceSize": {
+        "w": 294,
+        "h": 414
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_leaf_yellow_03": {
+      "frame": {
+        "x": 717,
+        "y": 1247,
+        "w": 404,
+        "h": 298
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 404,
+        "h": 298
+      },
+      "sourceSize": {
+        "w": 404,
+        "h": 298
+      },
+      "anchor": {
+        "x": 0.04,
+        "y": 0.94
+      }
+    },
+    "corn_stage_01": {
+      "frame": {
+        "x": 1822,
+        "y": 4,
+        "w": 148,
+        "h": 184
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 148,
+        "h": 184
+      },
+      "sourceSize": {
+        "w": 148,
+        "h": 184
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_stage_02": {
+      "frame": {
+        "x": 4,
+        "y": 1247,
+        "w": 290,
+        "h": 368
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 290,
+        "h": 368
+      },
+      "sourceSize": {
+        "w": 290,
+        "h": 368
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_stage_03": {
+      "frame": {
+        "x": 1448,
+        "y": 4,
+        "w": 366,
+        "h": 570
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 366,
+        "h": 570
+      },
+      "sourceSize": {
+        "w": 366,
+        "h": 570
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_stage_04": {
+      "frame": {
+        "x": 491,
+        "y": 4,
+        "w": 380,
+        "h": 687
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 380,
+        "h": 687
+      },
+      "sourceSize": {
+        "w": 380,
+        "h": 687
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_stage_05": {
+      "frame": {
+        "x": 879,
+        "y": 4,
+        "w": 384,
+        "h": 685
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 384,
+        "h": 685
+      },
+      "sourceSize": {
+        "w": 384,
+        "h": 685
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.98
+      }
+    },
+    "corn_stem_stripped_01": {
+      "frame": {
+        "x": 536,
+        "y": 702,
+        "w": 134,
+        "h": 516
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 134,
+        "h": 516
+      },
+      "sourceSize": {
+        "w": 134,
+        "h": 516
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.99
+      }
+    },
+    "corn_stem_stripped_02": {
+      "frame": {
+        "x": 1271,
+        "y": 4,
+        "w": 169,
+        "h": 652
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 169,
+        "h": 652
+      },
+      "sourceSize": {
+        "w": 169,
+        "h": 652
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.99
+      }
+    },
+    "corn_stem_withered_01": {
+      "frame": {
+        "x": 4,
+        "y": 4,
+        "w": 252,
+        "h": 690
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 252,
+        "h": 690
+      },
+      "sourceSize": {
+        "w": 252,
+        "h": 690
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.99
+      }
+    },
+    "corn_stem_withered_02": {
+      "frame": {
+        "x": 264,
+        "y": 4,
+        "w": 219,
+        "h": 688
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 219,
+        "h": 688
+      },
+      "sourceSize": {
+        "w": 219,
+        "h": 688
+      },
+      "anchor": {
+        "x": 0.5,
+        "y": 0.99
+      }
+    }
+  },
+  "meta": {
+    "app": "ChatGPT Corn Atlas Builder",
+    "version": "1.0",
+    "image": "corn_atlas.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 2048,
+      "h": 2048
+    },
+    "scale": "1"
+  }
+}
