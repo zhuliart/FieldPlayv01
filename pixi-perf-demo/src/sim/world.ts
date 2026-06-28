@@ -307,6 +307,7 @@ export class World {
   // 巡田路径（道路网络 + 编辑模式）
   roadNet: RoadNet = { nodes: [], edges: [] };
   roadEditOn = false;
+  private roadHashTimer: ReturnType<typeof setTimeout> | 0 = 0; // URL hash 写入防抖
   private rPath: { left: number; top: number }[] = [];
   private rPathIdx = 0;
 
@@ -1034,14 +1035,45 @@ export class World {
       .map(([a, b]) => [a > i ? a - 1 : a, b > i ? b - 1 : b] as [number, number]);
     this.saveRoadNet();
   }
-  resetRoadNet() { this.seedRoadNet(); try { localStorage.removeItem('fp_pixi_roadnet'); } catch { /* 隐私模式忽略 */ } } // 恢复默认并清除本地覆盖
+  resetRoadNet() { this.seedRoadNet(); try { localStorage.removeItem('fp_pixi_roadnet'); } catch { /* 隐私模式忽略 */ } try { if (this.roadHashTimer) clearTimeout(this.roadHashTimer); history.replaceState(null, '', location.pathname + location.search); } catch { /* ignore */ } } // 恢复默认并清除本地覆盖 + URL hash
   clearRoadNet() { this.roadNet = { nodes: [], edges: [] }; this.saveRoadNet(); }
 
   // 巡田路径持久化（localStorage，强刷/重开浏览器都不丢；对齐 H5 的 fp_roadnet 机制）
   private saveRoadNet() {
     try { localStorage.setItem('fp_pixi_roadnet', JSON.stringify(this.roadNet)); } catch { /* 隐私模式忽略 */ }
+    // 同步写 URL hash（防抖 350ms）：hash 随 URL 保留 → 强刷/书签/跨窗口(含无痕，打开同一 URL)都不丢；
+    // 防抖避免拖动节点时高频 replaceState 触发 Safari 节流。
+    try {
+      if (this.roadHashTimer) clearTimeout(this.roadHashTimer);
+      this.roadHashTimer = setTimeout(() => this.writeRoadHash(), 350);
+    } catch { /* ignore */ }
+  }
+  // 紧凑编码进 URL hash：#r={n:[l,t,...], e:[a,b,...]}（坐标保留 1 位小数，控制长度）
+  private writeRoadHash() {
+    try {
+      const n = this.roadNet.nodes.flatMap((p) => [Math.round(p.left * 10) / 10, Math.round(p.top * 10) / 10]);
+      const e = this.roadNet.edges.flat();
+      history.replaceState(null, '', '#r=' + encodeURIComponent(JSON.stringify({ n, e })));
+    } catch { /* ignore */ }
+  }
+  private decodeRoadHash(): RoadNet | null {
+    try {
+      const m = /(?:^|[#&])r=([^&]+)/.exec(location.hash || '');
+      if (!m) return null;
+      const o = JSON.parse(decodeURIComponent(m[1])) as { n: number[]; e: number[] };
+      if (!o || !Array.isArray(o.n) || !Array.isArray(o.e)) return null;
+      const nodes: { left: number; top: number }[] = [];
+      for (let i = 0; i + 1 < o.n.length; i += 2) { const l = o.n[i], t = o.n[i + 1]; if (!Number.isFinite(l) || !Number.isFinite(t)) return null; nodes.push({ left: l, top: t }); }
+      const edges: [number, number][] = [];
+      for (let i = 0; i + 1 < o.e.length; i += 2) { const a = o.e[i], b = o.e[i + 1]; if (!Number.isFinite(a) || !Number.isFinite(b)) return null; edges.push([a, b]); }
+      return { nodes, edges };
+    } catch { return null; }
   }
   private loadRoadNet(): boolean {
+    // 1) URL hash 优先：hash 随 URL 保留 → 强刷/书签/分享/跨窗口都能恢复（无痕窗口打开带 hash 的 URL 亦可）。
+    const fromHash = this.decodeRoadHash();
+    if (fromHash && fromHash.nodes.length) { this.roadNet = fromHash; this.saveRoadNet(); return true; }
+    // 2) localStorage：普通窗口便捷恢复（无需 URL 带 hash）；命中后回写 hash → 之后强刷走 hash 兜底。
     try {
       const raw = localStorage.getItem('fp_pixi_roadnet');
       if (!raw) return false;
@@ -1052,6 +1084,7 @@ export class World {
         && nodes.every((n) => n && typeof n.left === 'number' && typeof n.top === 'number')
         && edges.every((e) => Array.isArray(e) && e.length === 2 && typeof e[0] === 'number' && typeof e[1] === 'number')) {
         this.roadNet = { nodes, edges };
+        this.writeRoadHash();
         return true;
       }
     } catch { /* 解析失败 → 回退默认路网 */ }

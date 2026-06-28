@@ -12,7 +12,9 @@ import { STAGE_W, STAGE_H } from '../data/baseCorners';
 //       三者互不冲突（缩放需两指、平移/操作单指）。缩放范围 [ZOOM_MIN, ZOOM_MAX]。
 export function installFitBoard(root: HTMLElement, gameLayer: HTMLElement, onScale?: (scale: number) => void): () => void {
   const ZOOM_MIN = 1, ZOOM_MAX = 3; // 1=贴合(复原)；上限 3×（手机看细节足够、又不至于过糊/过载）
-  let baseScale = 1;
+  // 拉伸铺满：横纵各自缩放铺满视口（非等比）→ 无黑边/无白边，但画面会随视口比例轻微变形。
+  // bsX/bsY 分轴 → 平移/缩放/触摸坐标换算全部按轴处理，避免拉伸后落点错位。
+  let bsX = 1, bsY = 1;
   let zoom = 1; // 1=贴合；>1=放大
   let panX = 0, panY = 0; // 屏幕像素平移（叠加在居中之上）
 
@@ -23,28 +25,29 @@ export function installFitBoard(root: HTMLElement, gameLayer: HTMLElement, onSca
 
   const clampPan = () => {
     const { W, H } = viewport();
-    const s = baseScale * zoom; // 画面净缩放
+    const sX = bsX * zoom, sY = bsY * zoom; // 画面净缩放（分轴）
     // 平移上限 = 舞台超出视口的一半 +「过卷余量」。过卷余量让最贴边的地块能再往视口里多拖一段 →
     // 否则贴边地块卡在屏幕边缘、还会被左侧 HUD 面板/浏览器边挡住，表现为"拖不到原画面最左/最右"。
     const overX = W * 0.4, overY = H * 0.28;
-    const maxTX = Math.max(0, (STAGE_W / 2) * s - W / 2 + overX);
-    const maxTY = Math.max(0, (STAGE_H / 2) * s - H / 2 + overY);
+    const maxTX = Math.max(0, (STAGE_W / 2) * sX - W / 2 + overX);
+    const maxTY = Math.max(0, (STAGE_H / 2) * sY - H / 2 + overY);
     panX = Math.max(-maxTX, Math.min(maxTX, panX));
     panY = Math.max(-maxTY, Math.min(maxTY, panY));
   };
 
   // 应用画面层变换：pan 以屏幕像素记；#fp-game 在 #fp-root(baseScale) 内，故 translate 需 ÷baseScale 抵消父级缩放。
   const applyGame = () => {
-    gameLayer.style.transform = `translate(${(panX / baseScale).toFixed(2)}px, ${(panY / baseScale).toFixed(2)}px) scale(${zoom.toFixed(4)})`;
+    // #fp-game 在 #fp-root(scale bsX,bsY) 内：平移需分轴 ÷bsX/÷bsY 抵消父级非等比缩放
+    gameLayer.style.transform = `translate(${(panX / bsX).toFixed(2)}px, ${(panY / bsY).toFixed(2)}px) scale(${zoom.toFixed(4)})`;
     document.body.classList.toggle('fp-zoomed', zoom > 1.001); // 放大态：隐藏世界锚定的浮标(仓库/商店/基站牌，避免错位)
-    onScale?.(baseScale * zoom); // 让 Pixi 按显示像素提分辨率（放大也清晰；onScale 内部已封顶）
+    onScale?.(Math.max(bsX, bsY) * zoom); // 按较大轴的放大倍率提分辨率（保清晰；onScale 内部已封顶）
   };
 
   const apply = () => {
     const { W, H } = viewport();
     if (!W || !H) return;
-    baseScale = Math.min(W / STAGE_W, H / STAGE_H);
-    root.style.transform = `scale(${baseScale.toFixed(4)})`; // #fp-root 只受 fit 缩放（菜单层）
+    bsX = W / STAGE_W; bsY = H / STAGE_H; // 拉伸铺满：横纵各自缩放（非等比，无黑边）
+    root.style.transform = `scale(${bsX.toFixed(4)}, ${bsY.toFixed(4)})`;
     clampPan();
     applyGame();
     const touch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
@@ -62,7 +65,7 @@ export function installFitBoard(root: HTMLElement, gameLayer: HTMLElement, onSca
   let panCand = false, panning = false, dX = 0, dY = 0, sPanX = 0, sPanY = 0; // 单指平移
 
   // 屏幕坐标 → 世界(舞台)坐标：用于把两指中点锚在同一处缩放
-  const toWorld = (sx: number, sy: number) => { const { W, H } = viewport(); const s = baseScale * zoom; return { wx: STAGE_W / 2 + (sx - W / 2 - panX) / s, wy: STAGE_H / 2 + (sy - H / 2 - panY) / s }; };
+  const toWorld = (sx: number, sy: number) => { const { W, H } = viewport(); const sX = bsX * zoom, sY = bsY * zoom; return { wx: STAGE_W / 2 + (sx - W / 2 - panX) / sX, wy: STAGE_H / 2 + (sy - H / 2 - panY) / sY }; };
   const firstTwo = () => { const it = pts.values(); return [it.next().value!, it.next().value!] as const; };
   const beginPinch = () => {
     const [a, b] = firstTwo();
@@ -86,9 +89,9 @@ export function installFitBoard(root: HTMLElement, gameLayer: HTMLElement, onSca
       const [a, b] = firstTwo();
       const dist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
       zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, startZoom * (dist / startDist)));
-      const { W, H } = viewport(); const s = baseScale * zoom;
+      const { W, H } = viewport(); const sX = bsX * zoom, sY = bsY * zoom;
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      panX = mx - W / 2 - (aWX - STAGE_W / 2) * s; panY = my - H / 2 - (aWY - STAGE_H / 2) * s;
+      panX = mx - W / 2 - (aWX - STAGE_W / 2) * sX; panY = my - H / 2 - (aWY - STAGE_H / 2) * sY;
       clampPan(); applyGame();
       e.preventDefault(); e.stopPropagation();
       return;
