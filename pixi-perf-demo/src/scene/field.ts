@@ -398,13 +398,19 @@ export class Field {
         if (bare) { rec.view.visible = false; rec.shadow.visible = false; continue; }
         rec.view.visible = true;
         const sizeBase = PLANT_SIZE.corn ?? PLANT_SIZE_DEFAULT;
+        const wither = cornWither(sl, wx, stage); // 由 Slot 真实状态统一计算（不脱节）
+        // 高度修正（用户实测「幼苗期/枯萎主干太高」各减半）：
+        //  ① 幼苗期(growthCont→0)→ ×0.5，随出苗(≥1)平滑恢复到 ×1；
+        //  ② 枯萎主干随其渐显(stemBlend，对齐 cornPlant STEM_START0.55/STEM_FULL0.86)渐缩到 ×0.5。
+        const seedK = 0.5 + 0.5 * Math.min(1, growthCont);
+        const stemBlend = clamp01((wither - 0.55) / (0.86 - 0.55));
+        const witherK = 1 - 0.5 * stemBlend;
         const hPct = rec.pdepPct * (sizeBase + 0.18 * rec.depth) * rec.sizeJit * gScale;
-        const heightPx = (hPct / 100) * STAGE_H * CORN_HEIGHT_K;
+        const heightPx = (hPct / 100) * STAGE_H * CORN_HEIGHT_K * seedK * witherK;
         const bend = computeBend(sl, wx, stage); // 与标准作物同一套倒伏机制
         const durMS = (0.85 + rec.r4 * 1.9) * 1000;
         rec.curLodge += (computeLodgeTarget(bend, rec.r1, rec.r2, rec.r3, sl.dead) - rec.curLodge) * Math.min(1, dtMS / durMS);
         const rotation = ((rec.restAng + rec.curLodge) * Math.PI) / 180;
-        const wither = cornWither(sl, wx, stage); // 由 Slot 真实状态统一计算（不脱节）
         const baseTint = sl.dead ? multiplyColor(relight, deathTintOf(sl.deathKind)) : multiplyColor(multiplyColor(relight, cornStress(sl, wx, stage)), rec.colorVar);
         const partTint = sl.dead ? multiplyColor(relight, cornDeathTint(sl.deathKind)) : relight; // 主干/叶：环境光（死亡仅轻度色偏，干叶贴图本就枯黄，勿用深褐 deathTintOf 二次压黑）
         rec.view.update({ stage, upper, frac, heightPx, wither, rotation, baseTint, partTint, dead: sl.dead });
