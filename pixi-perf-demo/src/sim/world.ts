@@ -231,6 +231,7 @@ export class World {
   weather: { type: WeatherType; elapsedMS: number; durMS: number } = { type: 'clear', elapsedMS: 0, durMS: 0 };
   private weatherCooldownMS = 4000; // 仅加速模式使用
   private lifeTickAcc = 0;
+  private lifeN = 0; // lifeTick 计数（阴天半速耗水用）
   private slowAcc = 0; // 慢 tick（市场/杂草/经济）累积器
 
   // —— 市场行情（均值回归 + 暴涨暴跌），权威模型 ——
@@ -669,7 +670,7 @@ export class World {
   // 作物是否「需要浇水」：阴雨/霜冻/夜间植物蒸腾弱基本不需；晴/旱白天且有干燥活株才需（按天气+生长设任务，非看库存）
   needWater(p: Plot): boolean {
     const wx = this.weather.type;
-    if (wx === 'rain' || wx === 'lightrain' || wx === 'cloudy' || wx === 'frost') return false; // 阴雨/霜冻：作物从天气得水、不蒸腾
+    if (wx === 'rain' || wx === 'lightrain' || wx === 'frost') return false; // 降水(雨/小雨)作物自得水、霜冻休眠 → 不浇；阴天会慢慢变干，按需浇（不再一律豁免阴天）
     // 不再硬排除夜间：夜里作物本就不耗水(lifeTick)→自然不渴；但若白天遗留了"真渴"的株(dry>0)，夜里也允许补救浇水，避免枯死
     return p.slots.some((sl) => sl.phase === 'grow' && !sl.dead && sl.growth < 400 && (sl.moist <= 2 || sl.dry > 0));
   }
@@ -1283,6 +1284,7 @@ export class World {
 
   // 一次应激/致死 tick —— 逐项移植原型 tick()：湿度/缺水/涝渍/受冻/干旱 + 阶段耐旱阈值 + 致死概率 + 过熟老化
   private lifeTick() {
+    this.lifeN++;
     const wInt = this.weatherIntensity();
     const wx = this.weather.type;
     const night = this.tod < 0.27 || this.tod > 0.80; // 夜间：作物蒸腾弱 → 基本不耗水、不旱死（与 needWater 口径一致，修"夜里不浇水却枯死")
@@ -1315,10 +1317,16 @@ export class World {
             if (sl.moist > 0) { sl.moist = Math.max(0, sl.moist - (wInt > 0.5 ? 2 : 1)); sl.dry = 0; }
             else { sl.dry += wInt > 0.5 ? 2 : 1; if (sl.dry >= (DRY_DEATH[stage] || 5)) this.kill(sl, 'dry'); }
           }
-        } else if (wx === 'cloudy' || wx === 'lightrain') {
-          sl.dry = 0; sl.moist = Math.max(sl.moist, 2); // 阴雨补水
+        } else if (wx === 'lightrain') {
+          sl.dry = 0; sl.moist = Math.max(sl.moist, 2); // 小雨=降水：作物自得水
+        } else if (wx === 'cloudy') {
+          // 阴天：无降水、蒸发弱但仍会慢慢变干（白天·半速）→ 久阴不浇也会渴/枯，需机器人偶尔补水（与 needWater 一致）
+          if (!night && (this.lifeN & 1) === 0) {
+            if (sl.moist > 0) { sl.moist -= 1; sl.dry = 0; }
+            else { sl.dry += 1; if (sl.dry >= (DRY_DEATH[stage] || 5)) this.kill(sl, 'dry'); }
+          }
         } else if (!night) {
-          // 晴·白天：耗水，断水累积缺水 → 旱死（夜间不耗水、不旱死 → 机器人夜里不浇水也不会枯）
+          // 晴·白天：全速耗水，断水累积缺水 → 旱死（夜间不耗水、不旱死 → 机器人夜里不浇水也不会枯）
           if (sl.moist > 0) { sl.moist -= 1; sl.dry = 0; }
           else { sl.dry += 1; if (sl.dry >= (DRY_DEATH[stage] || 5)) this.kill(sl, 'dry'); }
         }
