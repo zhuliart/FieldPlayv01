@@ -143,6 +143,9 @@ const SEED: [CropKey, number][] = [
   ['tomato', 2], ['lettuce', 4], ['wheat', 1], ['chili', 3],
 ];
 
+// 学习成果存档 schema 版本：结构变更时 +1 → 旧档自动作废（不读、回落 fresh），防版本错配注入脏数据
+const BRAIN_SAVE_V = 1;
+
 // 经济常量（原样移植原型）
 const AI_START = 2500;
 const IDLE_LIMIT = 45; // 闲置达此 tick 数才进入课税池
@@ -299,6 +302,7 @@ export class World {
   constructor() {
     this.seed();
     if (!this.loadRoadNet()) this.seedRoadNet(); // 优先加载本地已保存的巡田路径，没有才用默认路网
+    this.loadBrain(); // 在 freshBrain()/freshAI() 之后：把上次会话学到的策略合并进来（脏档/无档则保持 fresh）
     if (this.live) this.tod = this.localTod();
   }
 
@@ -423,6 +427,7 @@ export class World {
     this.brain = freshBrain();
     this.econ = freshEcon();
     this.player = freshPlayer();
+    try { localStorage.removeItem('fp_pixi_brain'); } catch { /* 隐私模式忽略 */ } // 清学习存档，否则"重置"后下次启动又被旧档复活
   }
 
   // （旧的固定蛇形巡逻 buildPatrol/startSeg 已移除，改为下方需求驱动状态机 stepRobot）
@@ -656,6 +661,7 @@ export class World {
     b.steps++;
     b.netReward += r;
     b.eps = Math.max(0.05, b.eps * 0.9992); // 探索率缓慢衰减 → 越学越笃定
+    if (b.steps % 20 === 0) this.saveBrain(); // 节流落盘：每 20 次决策存一次（关页/隐藏时另强存一次，见 main.ts）
     this.rPend = null;
   }
 
@@ -1020,6 +1026,47 @@ export class World {
       }
     } catch { /* 解析失败 → 回退默认路网 */ }
     return false;
+  }
+
+  // —— 学习成果持久化（localStorage，跨会话累积"越用越聪明"）——
+  // 只存「学到的策略」(权重/偏置/作物 Q/阈值/探索率)，不存 funds/stock/plots 等游戏局面（那会破坏重置语义）。
+  // 沿用路网的 fp_pixi_ 前缀与 try/catch（隐私模式不崩）；重置由 resetAll() 清档；关页/隐藏强存见 main.ts。
+  // public：供 main.ts 在 visibilitychange/pagehide 时强制 flush。
+  saveBrain(): void {
+    try {
+      const blob = {
+        v: BRAIN_SAVE_V,
+        brain: this.brain,                  // 权重 wValue/wUrgency/wPower + 动作偏置 kind + densBias/eps/steps/netReward
+        q: this.ai.q,                       // 各作物 Q（选种学习量）
+        sellThreshold: this.ai.sellThreshold,
+        storeBias: this.ai.storeBias,
+        explore: this.ai.explore,
+      };
+      localStorage.setItem('fp_pixi_brain', JSON.stringify(blob));
+    } catch { /* 隐私模式忽略 */ }
+  }
+  // 启动时读取并「带校验合并」：读不到/版本不符/结构不符 → 保持 fresh；逐字段 Number.isFinite + clamp、缺字段用默认
+  // → 脏档绝不崩、绝不注入 NaN 污染打分。在 constructor 的 freshBrain()/freshAI() 之后调用。
+  private loadBrain(): void {
+    try {
+      const raw = localStorage.getItem('fp_pixi_brain');
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (!s || s.v !== BRAIN_SAVE_V || typeof s.brain !== 'object') return; // 版本/结构不符 → 用 fresh
+      const b = s.brain;
+      if (Number.isFinite(b.wValue)) this.brain.wValue = clampW(b.wValue);
+      if (Number.isFinite(b.wUrgency)) this.brain.wUrgency = clampW(b.wUrgency);
+      if (Number.isFinite(b.wPower)) this.brain.wPower = clampW(b.wPower);
+      if (Number.isFinite(b.densBias)) this.brain.densBias = Math.max(-3, Math.min(3, b.densBias));
+      if (Number.isFinite(b.eps)) this.brain.eps = Math.max(0.05, Math.min(0.5, b.eps));
+      if (Number.isFinite(b.steps)) this.brain.steps = b.steps;
+      if (Number.isFinite(b.netReward)) this.brain.netReward = b.netReward;
+      if (b.kind && typeof b.kind === 'object') this.brain.kind = sanitizeBias(b.kind); // 清洗：丢非有限数、clamp[-3,3]
+      if (s.q && typeof s.q === 'object') for (const k of CROP_KEYS) if (Number.isFinite(s.q[k])) this.ai.q[k] = s.q[k];
+      if (Number.isFinite(s.sellThreshold)) this.ai.sellThreshold = Math.max(2, Math.min(9, s.sellThreshold));
+      if (Number.isFinite(s.storeBias)) this.ai.storeBias = Math.max(0.1, Math.min(0.92, s.storeBias));
+      if (Number.isFinite(s.explore)) this.ai.explore = Math.max(0.05, Math.min(0.5, s.explore));
+    } catch { /* 损坏存档忽略，用 fresh */ }
   }
 
   // 收获该地块所有成熟株 → 入待售库存 econ.stock（不即时变现，带新鲜度）+ 更新 Q 值 + 回补生态肥。
@@ -1681,3 +1728,10 @@ function clampN(v: number, a: number, b: number): number {
 
 // 大脑权重 clamp（恒正、有界 → 学习稳定不发散）
 function clampW(v: number): number { return Math.max(0.05, Math.min(4, +v.toFixed(4))); }
+
+// 清洗学习偏置字典（载入存档用）：丢掉非有限数的值、把数值 clamp 到 [-3,3] → 脏档不会注入 NaN 污染打分
+function sanitizeBias(o: Record<string, unknown>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const k in o) { const v = o[k]; if (typeof v === 'number' && Number.isFinite(v)) out[k] = Math.max(-3, Math.min(3, v)); }
+  return out;
+}

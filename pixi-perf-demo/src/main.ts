@@ -65,6 +65,11 @@ async function boot() {
   const world = new World();
   world.todSpeed = 1 / 60000; // 常规：约 60s 一个昼夜
 
+  // 学习成果强制落盘：页面隐藏(切后台/锁屏)或卸载时存一次，避免节流(每20步)漏掉最后一段学习。
+  const flushBrain = () => world.saveBrain();
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flushBrain(); });
+  window.addEventListener('pagehide', flushBrain);
+
   const atlas = new PlantAtlas();
   await atlas.build(app.renderer);
 
