@@ -91,9 +91,9 @@ export class Field {
   private wildKinds: number[] = [];  // 可长在野地的类型索引
   private roadKinds: number[] = [];  // 可长在路上的类型索引
   // 田内杂草：随 weedProg 出现，出现后走个体生命周期(生长→成熟→枯萎转黑倒伏)，枯后保留为残株待机器人清枯(rule4)
-  private weedRecs: { sprite: Sprite; plotId: number; order: number; appear: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: Sprite; colorVar: number; restAng: number; growMul: number; life: number; phase: number; hold: number; wither: number; lodge: number }[] = [];
+  private weedRecs: { sprite: Sprite; sprite2: Sprite; plotId: number; order: number; appear: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: Sprite; colorVar: number; restAng: number; growMul: number; life: number; phase: number; hold: number; wither: number; lodge: number }[] = [];
   // 野地杂草：田块外按习性长草，有完整生命周期（生长→成熟→枯萎→原地/异地重生）+ 多样性随机
-  private wildRecs: { sprite: Sprite; shadow: Sprite; kind: WeedKind; onPath: boolean; bx: number; by: number; sizeJit: number; colorVar: number; restAng: number; growMul: number; cur: number; life: number; phase: number; hold: number; wither: number; lodge: number; pressed: boolean }[] = [];
+  private wildRecs: { sprite: Sprite; sprite2: Sprite; shadow: Sprite; kind: WeedKind; onPath: boolean; bx: number; by: number; sizeJit: number; colorVar: number; restAng: number; growMul: number; cur: number; life: number; phase: number; hold: number; wither: number; lodge: number; pressed: boolean }[] = [];
   private roadNodes: { left: number; top: number }[] = []; // 供野草异地重生时判定 onPath
   private roadEdges: [number, number][] = [];
   private lastShadowAlpha = 0.3; // 当前接地阴影强度（随天气/昼夜），供全量光影冠层投影同步浓度
@@ -268,10 +268,12 @@ export class Field {
         s.position.set(pctX(wpt.x), pctY(wpt.y));
         s.zIndex = wpt.y; // 与作物/机身同层按 y 排序 → 身前的杂草遮挡机器人底部，身后的在其后
         s.visible = false;
-        this.cropLayer.addChild(s);
+        const s2 = new Sprite(kind.stages[0]); // 阶段交叉淡入用（下一阶段）
+        s2.anchor.set(0.5, 0.99); s2.visible = false;
+        this.cropLayer.addChild(s, s2);
         const sizeJit = 0.8 + plantHash(p.id, k, 24) * 0.5;
         const targetH = kind.sizeH * perspScale(wpt.y) * sizeJit; // 透视：远小近大 + 类型尺寸层级 + 随株大小
-        this.weedRecs.push({ sprite: s, plotId: p.id, order: k, appear, kind, targetH, cur: -1, malign: kind.category === 'malignant', shadow: this.mkShadow(), colorVar: weedTint(plantHash(p.id, k, 26), plantHash(p.id, k, 27)), restAng: (plantHash(p.id, k, 28) - 0.5) * 22, growMul: 0.7 + plantHash(p.id, k, 25) * 0.8, life: 0, phase: 0, hold: W_MATURE + plantHash(p.id, k, 29) * W_MATURE_RND, wither: 0, lodge: 0 });
+        this.weedRecs.push({ sprite: s, sprite2: s2, plotId: p.id, order: k, appear, kind, targetH, cur: -1, malign: kind.category === 'malignant', shadow: this.mkShadow(), colorVar: weedTint(plantHash(p.id, k, 26), plantHash(p.id, k, 27)), restAng: (plantHash(p.id, k, 28) - 0.5) * 22, growMul: 0.7 + plantHash(p.id, k, 25) * 0.8, life: 0, phase: 0, hold: W_MATURE + plantHash(p.id, k, 29) * W_MATURE_RND, wither: 0, lodge: 0 });
       }
     }
     this.buildWildWeeds(world);
@@ -300,10 +302,12 @@ export class Field {
       s.position.set(pctX(gx), pctY(gy));
       s.zIndex = gy; // 与作物/机身同层按 y 纵深排序
       s.visible = false;
-      this.cropLayer.addChild(s);
+      const s2 = new Sprite(kind.stages[0]); // 阶段交叉淡入用（下一阶段）
+      s2.anchor.set(0.5, 0.99); s2.visible = false;
+      this.cropLayer.addChild(s, s2);
       // 多样性随机(尺寸/色彩/方向/速度) + 初始生命阶段参差(野地长期无人打理)
       this.wildRecs.push({
-        sprite: s, shadow: this.mkShadow(), kind, onPath: onPathOf(gx, gy),
+        sprite: s, sprite2: s2, shadow: this.mkShadow(), kind, onPath: onPathOf(gx, gy),
         bx: gx, by: gy,
         sizeJit: 0.7 + wildHash(h, 4) * 0.7,
         colorVar: weedTint(wildHash(h, 9), wildHash(h, 10)),
@@ -446,7 +450,9 @@ export class Field {
       // —— 应激滤镜（tint 近似，不破合批）：旱黄 / 冻蓝 / 涝暗 / 枯褐 / 过熟褪色 ——
       let stress = 0xffffff;
       if (sl.dead) {
-        stress = sl.deathKind === 'frozen' ? 0x9fb1d0 : sl.deathKind === 'rot' ? 0x5c6b46 : 0x6f5530;
+        // 枯死色：原值偏深(rot 0x5c6b46/旱褐 0x6f5530)，叠夜间暗环境光后近黑、显脏。改用明亮枯草调 →
+        // 冻死 浅冷蓝灰 / 烂根 暗橄榄黄(提亮) / 旱·过熟 枯黄褐(提亮) → 像自然干枯而非烧黑。
+        stress = sl.deathKind === 'frozen' ? 0xbcc8dc : sl.deathKind === 'rot' ? 0x9aa066 : 0xc2a062;
       } else if (sl.growth >= 400 && sl.age > 5) {
         stress = lerpColor(0xffffff, 0xc9a85a, Math.min(1, (sl.age - 5) / 11) * 0.7);
       } else if (stage < 4) {
@@ -471,11 +477,11 @@ export class Field {
     for (const wr of this.weedRecs) {
       const plot = world.plots[wr.plotId];
       const sp = wr.sprite;
-      if (!plot) { sp.visible = false; wr.shadow.visible = false; continue; }
+      if (!plot) { sp.visible = false; wr.sprite2.visible = false; wr.shadow.visible = false; continue; }
       const wp = wr.malign ? plot.malign : plot.weedProg; // 恶性株按 malign 出现，普通株按 weedProg
       const appearAt = wr.appear; // 每株自带出现阈值（普通密集递进、恶性低阈值且仅 2 株）
       if (wp <= appearAt) { // 未冒出 / 已被除草翻耕 → 隐藏并复位生命周期
-        sp.visible = false; wr.shadow.visible = false;
+        sp.visible = false; wr.sprite2.visible = false; wr.shadow.visible = false;
         wr.life = 0; wr.phase = 0; wr.wither = 0; wr.lodge = 0; wr.cur = -1; continue;
       }
       const kind = wr.kind;
@@ -485,7 +491,7 @@ export class Field {
       else if (wr.phase === 2) { wr.wither += dtMS / WITHER_FIELD; if (wr.wither >= 1) { wr.wither = 1; wr.phase = 3; } }
       const lodgeTarget = wr.phase >= 2 ? 52 * Math.min(1, wr.wither) : 0; // 枯萎渐渐倒伏
       wr.lodge += (lodgeTarget - wr.lodge) * Math.min(1, dtMS / 800);
-      drawWeed(sp, wr.shadow, kind, wr.targetH, wr.life, wr.phase, wr.wither, wr.lodge, wr.restAng, wr.colorVar, relight, shadowAlpha, 1, (st) => { if (wr.cur !== st) { sp.texture = kind.stages[st]; wr.cur = st; } });
+      drawWeed(sp, wr.sprite2, wr.shadow, kind, wr.targetH, wr.life, wr.phase, wr.wither, wr.lodge, wr.restAng, wr.colorVar, relight, shadowAlpha, 1);
     }
 
     // —— 野地杂草生命周期：生长→成熟→枯萎(倒伏/转黑/缩)→枯死。野地枯株保留极长后原地重生(rule5)；
@@ -515,7 +521,7 @@ export class Field {
       const lodgeTarget = wr.phase >= 2 ? (wr.pressed ? 82 : 50) * Math.min(1, wr.wither) : 0;
       wr.lodge += (lodgeTarget - wr.lodge) * Math.min(1, dtMS / 800);
       const targetH = kind.sizeH * perspScale(wr.by) * wr.sizeJit; // 透视：远小近大（动态，随重生位置更新）
-      drawWeed(sp, wr.shadow, kind, targetH, wr.life, wr.phase, wr.wither, wr.lodge, wr.restAng, wr.colorVar, relight, shadowAlpha, fade, (st) => { if (wr.cur !== st) { sp.texture = kind.stages[st]; wr.cur = st; } });
+      drawWeed(sp, wr.sprite2, wr.shadow, kind, targetH, wr.life, wr.phase, wr.wither, wr.lodge, wr.restAng, wr.colorVar, relight, shadowAlpha, fade);
     }
   }
 
@@ -642,21 +648,34 @@ function applyShadow(sh: Sprite, tex: Texture, anchorX: number, anchorY: number,
 function setShadow(sh: Sprite, src: Sprite, hPx: number, renderW: number, alpha: number) {
   applyShadow(sh, src.texture, src.anchor.x, src.anchor.y, src.scale.x, src.scale.y, src.x, src.y, hPx, renderW, alpha);
 }
-// 渲染一株野草：连续生长(补偿阶段relH，消除换阶段突然变大) + 枯萎转黑/缩/倒 + 接地阴影。setTex(stage) 按需换贴图。
-function drawWeed(sp: Sprite, sh: Sprite, kind: WeedKind, targetH: number, life: number, phase: number, wither: number, lodge: number, restAng: number, colorVar: number, relight: number, shadowAlpha: number, fade: number, setTex: (stage: number) => void): void {
+// 渲染一株野草：连续平滑爬升生长(幼苗极小→成熟) + 阶段交叉淡入(sp 当前阶段、sp2 下一阶段，类作物) +
+// 枯萎转枯褐(非黑)/缩/倒 + 接地阴影。两株贴图按 relH 归一，换阶段只换形态不跳大小。
+function drawWeed(sp: Sprite, sp2: Sprite, sh: Sprite, kind: WeedKind, targetH: number, life: number, phase: number, wither: number, lodge: number, restAng: number, colorVar: number, relight: number, shadowAlpha: number, fade: number): void {
   const stg = kind.stages, N = stg.length, growN = kind.hasWithered ? N - 1 : N;
   const Lc = Math.min(1, life);
-  const stage = phase >= 2 ? N - 1 : Math.min(growN - 1, Math.floor(Lc * growN)); // 枯萎显末帧；生长只到成熟
-  const plantH = targetH * (0.18 + 0.82 * Math.pow(Lc, 0.92)) * (1 - wither * 0.22); // 幼苗更小(0.18)→成熟(1.0)拉开差距；枯萎以倒伏/转黑为主、仅轻微缩
-  if (plantH < 1.2 || fade <= 0.01) { sp.visible = false; sh.visible = false; return; }
-  sp.visible = true;
-  setTex(stage);
-  // 关键：目标株高 ÷ 该阶段贴图内植株占比(relH) → 换阶段只换形态、不跳大小（消除 yellowdock 突然长大）
-  sp.scale.set(plantH / (stageRel(stage, N) * (stg[stage].height || 1)));
-  sp.rotation = ((restAng + lodge) * Math.PI) / 180;
-  const dark = wither > 0 ? lerpColor(0xffffff, 0x241d14, Math.min(1, wither) * 0.9) : 0xffffff; // 枯萎转黑(rule4)
-  sp.tint = multiplyColor(multiplyColor(relight, colorVar), dark);
-  sp.alpha = fade;
+  const withered = phase >= 2;
+  const fStage = Lc * growN;
+  const stage = withered ? N - 1 : Math.min(growN - 1, Math.floor(fStage)); // 枯萎显末帧；生长只到成熟
+  const frac = withered ? 0 : Math.min(1, fStage - stage);                   // 阶段内进度
+  const next = Math.min(growN - 1, stage + 1);
+  // 幼苗极小(0.02，原 0.18 的 ~10%)→平滑爬升到成熟(1.0)，pow 让早期增速更柔、不再"突然变大"
+  const plantH = targetH * (0.02 + 0.98 * Math.pow(Lc, 1.15)) * (1 - wither * 0.22);
+  if (plantH < 0.6 || fade <= 0.01) { sp.visible = false; sp2.visible = false; sh.visible = false; return; }
+  const rot = ((restAng + lodge) * Math.PI) / 180;
+  const dark = wither > 0 ? lerpColor(0xffffff, 0x7a5f38, Math.min(1, wither) * 0.85) : 0xffffff; // 枯萎转枯褐(枯草色，非近黑)
+  const tint = multiplyColor(multiplyColor(relight, colorVar), dark);
+  // 当前阶段
+  if (sp.texture !== stg[stage]) sp.texture = stg[stage];
+  sp.scale.set(plantH / (stageRel(stage, N) * (stg[stage].height || 1))); // ÷relH → 换阶段不跳大小
+  sp.rotation = rot; sp.tint = tint; sp.alpha = fade; sp.visible = true;
+  // 下一阶段交叉淡入（仅生长态、每阶段最后 30%）→ 形态平滑过渡、无突变
+  const bAlpha = (!withered && stage < growN - 1) ? Math.max(0, (frac - 0.7) / 0.3) : 0;
+  if (bAlpha > 0.003) {
+    if (sp2.texture !== stg[next]) sp2.texture = stg[next];
+    sp2.anchor.copyFrom(sp.anchor); sp2.position.copyFrom(sp.position); sp2.zIndex = sp.zIndex;
+    sp2.scale.set(plantH / (stageRel(next, N) * (stg[next].height || 1)));
+    sp2.rotation = rot; sp2.tint = tint; sp2.alpha = fade * bAlpha; sp2.visible = true;
+  } else sp2.visible = false;
   setShadow(sh, sp, plantH, sp.texture.width * sp.scale.x, shadowAlpha * (1 - wither * 0.55));
 }
 function lerpColor(a: number, b: number, t: number): number {
