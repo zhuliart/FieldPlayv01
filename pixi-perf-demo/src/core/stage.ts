@@ -21,8 +21,11 @@ export function installFitBoard(root: HTMLElement, gameLayer: HTMLElement, onSca
   const clampPan = () => {
     const { W, H } = viewport();
     const s = baseScale * zoom; // 画面净缩放
-    const maxTX = Math.max(0, (STAGE_W / 2) * s - W / 2); // 画面比视口宽才允许平移，且不露出舞台外空白
-    const maxTY = Math.max(0, (STAGE_H / 2) * s - H / 2);
+    // 平移上限 = 舞台超出视口的一半 +「过卷余量」。过卷余量让最贴边的地块能再往视口里多拖一段 →
+    // 否则贴边地块卡在屏幕边缘、还会被左侧 HUD 面板/浏览器边挡住，表现为"拖不到原画面最左/最右"。
+    const overX = W * 0.4, overY = H * 0.28;
+    const maxTX = Math.max(0, (STAGE_W / 2) * s - W / 2 + overX);
+    const maxTY = Math.max(0, (STAGE_H / 2) * s - H / 2 + overY);
     panX = Math.max(-maxTX, Math.min(maxTX, panX));
     panY = Math.max(-maxTY, Math.min(maxTY, panY));
   };
