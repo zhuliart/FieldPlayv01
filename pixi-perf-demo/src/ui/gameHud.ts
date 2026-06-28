@@ -72,6 +72,18 @@ export class GameHud {
     parent.appendChild(root);
   }
 
+  // ============ 一键隐藏/显示全部 UI（桌面 T / 移动端三连击）============
+  // 隐藏整层 HUD（时钟/经营/市场/工具条/状态栏/季节/天气/建筑牌/机器人气泡/路径工具条…全在 this.root 内）；
+  // 路网 SVG 在画面层、平时本就隐藏（仅编辑态显示），隐藏 UI 时一并藏、恢复时回到编辑态 → 得到纯净田地视图。
+  private uiHidden = false;
+  toggleUi(): boolean {
+    this.uiHidden = !this.uiHidden;
+    this.root.style.display = this.uiHidden ? 'none' : 'block';
+    this.svgRoad.style.display = this.uiHidden ? 'none' : (this.world.roadEditOn ? 'block' : 'none');
+    return this.uiHidden;
+  }
+  get isUiHidden(): boolean { return this.uiHidden; }
+
   // ============ 顶部左：昼夜时钟 + 实时天气 芯片 ============
   private buildClockChip() {
     const box = E('div', 'position:absolute; top:14px; left:14px; width:188px; display:flex; align-items:center; gap:8px; background:linear-gradient(rgba(38,52,74,.92),rgba(26,38,58,.92)); border:1.5px solid rgba(176,134,63,.45); border-radius:13px; padding:6px 12px 6px 10px; box-shadow:0 5px 14px rgba(0,0,0,.26); pointer-events:auto;');

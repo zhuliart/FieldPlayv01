@@ -210,6 +210,39 @@ async function boot() {
   // 全量 HUD（DOM 叠加，挂在 #fp-root 内随舞台缩放）
   const gameHud = new GameHud(root, gameLayer, world);
 
+  // —— 一键隐藏/显示全部 UI（桌面按 T；移动端三连击屏幕）→ 纯净田地视图，便于观赏/截图 ——
+  let hideHint: HTMLDivElement | null = null;
+  const toggleUi = () => {
+    const hidden = gameHud.toggleUi();
+    if (hideHint) { hideHint.remove(); hideHint = null; }
+    if (hidden) { // 隐藏时给一条会自动消失的提示（独立于 HUD，不随其隐藏），告知如何恢复
+      const hint = document.createElement('div');
+      hint.textContent = '已隐藏界面 · 按 T 或 三连击屏幕 恢复';
+      hint.style.cssText = 'position:absolute; top:18px; left:50%; transform:translateX(-50%); z-index:90; background:rgba(20,28,42,.82); color:#eaf2fb; font:700 12px/1 "Noto Sans SC",sans-serif; padding:8px 14px; border-radius:11px; box-shadow:0 4px 12px rgba(0,0,0,.3); pointer-events:none; transition:opacity .5s; opacity:1;';
+      root.appendChild(hint);
+      hideHint = hint;
+      setTimeout(() => { hint.style.opacity = '0'; }, 1400);
+      setTimeout(() => { if (hideHint === hint) { hint.remove(); hideHint = null; } }, 1950);
+    }
+  };
+  // 桌面：T 键（避开输入框，本项目虽无输入框，稳妥起见判断）
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 't' && e.key !== 'T') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return; // 不抢系统快捷键
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    toggleUi();
+  });
+  // 移动端：三连击屏幕（同一区域内 3 次快速点按 → 与正常分散的游戏点击区分）
+  let taps: number[] = []; let tapX = 0; let tapY = 0;
+  root.addEventListener('pointerdown', (e) => {
+    const now = e.timeStamp;
+    if (taps.length && (now - taps[taps.length - 1] > 500 || Math.abs(e.clientX - tapX) + Math.abs(e.clientY - tapY) > 60)) taps = []; // 超时/移位 → 重新计数
+    tapX = e.clientX; tapY = e.clientY;
+    taps.push(now);
+    if (taps.length >= 3) { taps = []; toggleUi(); }
+  }, { capture: true });
+
   // 默认进入「常规」档
   applyTier('normal');
 
