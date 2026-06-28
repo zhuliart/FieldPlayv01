@@ -71,7 +71,7 @@ export interface CornUpdate {
   dead: boolean;
 }
 
-interface LeafEntry { ai: number; frame: string; flipX: boolean; sJit: number; yJit: number; rJit: number; droopK: number; chaos: number; }
+interface LeafEntry { ai: number; frame: string; flipX: boolean; sJit: number; wJit: number; lenJit: number; rJit: number; droopK: number; chaos: number; }
 
 export class CornPlantView extends Container {
   // 供 Field 阴影系统读取的「当前主导基底」几何（每帧 update 刷新）：贴图 + 缩放 + 锚点 y。
@@ -128,7 +128,11 @@ export class CornPlantView extends Container {
       const stemFrame = pool[Math.floor(plantHash(this.plotId, this.slotIdx, 70) * pool.length) % pool.length];
       if (this.bTexName !== stemFrame) { this.bTexName = stemFrame; this.baseB.texture = this.atlas.getCorn(stemFrame); }
       this.baseB.anchor.set(0.5, this.atlas.cornAnchor(stemFrame).y);
-      this.baseB.scale.set(p.heightPx / (this.baseB.texture.height || 1));
+      // 主干 大小/粗细/狭长 多样性：粗细(宽)独立抖动 + 轻微高度抖动 → 有的瘦高狭长、有的矮壮
+      const sH = p.heightPx / (this.baseB.texture.height || 1);
+      const stemW = 0.70 + plantHash(this.plotId, this.slotIdx, 71) * 0.62; // 粗细 0.70(瘦狭长)..1.32(粗壮)
+      const stemL = 0.93 + plantHash(this.plotId, this.slotIdx, 72) * 0.17; // 高度 0.93..1.10
+      this.baseB.scale.set(sH * stemW, sH * stemL);
       this.baseB.tint = p.partTint;
       this.baseB.alpha = stemBlend;
     }
@@ -179,8 +183,10 @@ export class CornPlantView extends Container {
         ai: i,
         frame: pick.frame,
         flipX: pick.flip,
-        sJit: 0.88 + plantHash(this.plotId, this.slotIdx, 60 + i) * 0.24, // 0.88..1.12
-        yJit: 0.95 + plantHash(this.plotId, this.slotIdx, 80 + i) * 0.12, // 轻微非等比
+        // —— 大小 / 粗细 / 狭长 三维独立多样性 ——
+        sJit: 0.84 + plantHash(this.plotId, this.slotIdx, 60 + i) * 0.34,    // 整体大小 0.84..1.18
+        wJit: 0.74 + plantHash(this.plotId, this.slotIdx, 80 + i) * 0.52,    // 粗细(宽) 0.74..1.26
+        lenJit: 0.84 + plantHash(this.plotId, this.slotIdx, 120 + i) * 0.52, // 狭长(长) 0.84..1.36 → 与宽解耦 = 长宽比多样
         // —— 角度多样性（消除"同侧叶片一个角度"）——
         rJit: (plantHash(this.plotId, this.slotIdx, 90 + i) - 0.5) * 0.70,  // 固定随机偏转 ±0.35rad ≈ ±20°
         droopK: 0.45 + plantHash(this.plotId, this.slotIdx, 100 + i) * 1.30, // 每片独立下垂系数 0.45..1.75（不再同侧齐倒）
@@ -211,8 +217,8 @@ export class CornPlantView extends Container {
       const sgn = e.flipX ? -1 : 1;
       // 按帧最长边归一：干枯/卷曲叶帧偏大→缩到与健康/黄叶相称的长度，消除「枯萎株大很多」
       const norm = LEAF_REF_LEN / Math.max(tex.width, tex.height || 1);
-      const ls = aScale * LEAF_SCALE * e.sJit * norm * leafTypeScale(e.frame); // 再按叶型缩放：枯/黄/卷曲比健康叶小
-      lf.scale.set(sgn * ls, ls * e.yJit);
+      const ls = aScale * LEAF_SCALE * e.sJit * norm * leafTypeScale(e.frame); // 整体大小：归一 × 叶型 × sJit
+      lf.scale.set(sgn * ls * e.wJit, ls * e.lenJit); // 宽(粗细) / 长(狭长) 各自抖动 → 长宽比多样，不再千篇一律
       // 角度多样性：基础出叶角 + 每片固定随机偏转 + 每片独立下垂(系数不同→同侧不再齐倒) + 枯萎散乱(越枯越各朝各方)
       const droopSign = ap.side === 'left' ? -1 : ap.side === 'right' ? 1 : 0;
       const chaos = e.chaos * (0.25 + 0.75 * p.wither); // 健康期已有小散乱、枯萎期放大
