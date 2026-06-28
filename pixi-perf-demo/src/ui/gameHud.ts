@@ -48,6 +48,7 @@ export class GameHud {
     this.buildToolbar();
     this.buildResChips();
     this.buildSeedBrush();
+    this.buildPlantHint();
     this.buildConfirmModal();
     this.buildSeasonChip();
     this.buildWeatherPill();
@@ -333,6 +334,18 @@ export class GameHud {
     this.root.appendChild(bar);
   }
 
+  // ============ 种植说明条（手动「种植」工具时，选种 brush 上方）：作物/株数(可切 簇/株)/应季/落点提示 ============
+  private buildPlantHint() {
+    const bar = E('div', 'position:absolute; bottom:104px; left:50%; transform:translateX(-50%); display:none; align-items:center; gap:10px; background:linear-gradient(rgba(40,28,14,.84),rgba(40,28,14,.68)); border:1.5px solid rgba(176,134,63,.45); border-radius:14px; padding:6px 14px; box-shadow:0 5px 14px rgba(0,0,0,.3); pointer-events:auto; white-space:nowrap;');
+    this.r.plantHintText = E('span', 'font-size:12.5px; font-weight:800; color:#f4ecd8;', { text: '' });
+    const toggle = E('button', 'border:none; border-radius:10px; background:rgba(126,201,67,.55); color:#fff; font-size:12px; font-weight:900; padding:6px 12px; cursor:pointer; white-space:nowrap;', { text: '一簇5株' }) as HTMLButtonElement;
+    toggle.onclick = () => { this.world.plantBrushN = this.world.plantBrushN > 1 ? 1 : 5; }; // 簇(5株) ↔ 单株精修
+    this.r.plantBrushToggle = toggle;
+    bar.append(this.r.plantHintText, toggle);
+    this.r.plantHint = bar;
+    this.root.appendChild(bar);
+  }
+
   // ============ 季节牌（右下角，常驻）：种植时机考核的基准 ============
   private buildSeasonChip() {
     const chip = E('div', 'position:absolute; bottom:16px; right:14px; display:flex; align-items:center; gap:5px; background:linear-gradient(rgba(74,116,44,.9),rgba(50,86,30,.9)); border:1.5px solid rgba(176,134,63,.5); border-radius:13px; padding:5px 11px; font-size:12.5px; font-weight:800; color:#eaf6e0; box-shadow:0 4px 11px rgba(0,0,0,.25); pointer-events:auto;');
@@ -586,7 +599,16 @@ export class GameHud {
     // 手动工具条 + 资源条 + 选种 brush（手动模式显示）
     this.r.toolbar.style.display = auto ? 'none' : 'flex';
     this.r.resChips.style.display = auto ? 'none' : 'flex';
-    this.r.seedBrush.style.display = (!auto && w.manualTool === 'plant') ? 'flex' : 'none';
+    const planting = !auto && w.manualTool === 'plant';
+    this.r.seedBrush.style.display = planting ? 'flex' : 'none';
+    this.r.plantHint.style.display = planting ? 'flex' : 'none';
+    document.body.classList.toggle('fp-planting', planting); // 种植模式：stage 让出手势给田块(落点预览/种植)
+    if (planting) {
+      const c = w.manualSeed, fit = w.seasonFit(c), bn = Math.max(1, w.plantBrushN);
+      this.r.plantHintText.textContent = `🌱 ${CROP_CN[c]} ×${bn}${bn > 1 ? '/簇' : '/株'} · ${fit >= 1 ? '应季✓' : '非应季·' + w.seasonName()} · 点地块落点种下`;
+      this.r.plantBrushToggle.textContent = w.plantBrushN > 1 ? '一簇5株' : '单株精修';
+      this.r.plantBrushToggle.style.background = w.plantBrushN > 1 ? 'rgba(126,201,67,.55)' : 'rgba(224,162,58,.72)';
+    }
     if (!auto) {
       for (const [key] of TOOLS) {
         const b = this.r['tool_' + key];

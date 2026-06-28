@@ -249,6 +249,7 @@ export class World {
   // —— 玩家手动模式资源（金币/体力/水/生态肥）——
   player: PlayerRes = freshPlayer();
   manualSeed: CropKey = 'tomato'; // 手动「种植」工具当前选的作物
+  plantBrushN = 5; // 手动种植每次落点的株数：5=一簇 / 1=单株精修（UI 可切）
   pendingConfirm: { plotId: number; tool: 'water' | 'fert' } | null = null; // 作物不需要却强行 → 二次确认弹窗
 
   // 待消费的播报（HUD 取走后清空）
@@ -735,8 +736,8 @@ export class World {
     const p = this.plots[plotId]; if (!p) return;
     const crop = this.manualSeed;
     const per = Math.max(2, Math.round(CROPS[crop].seed / 14));
-    const N = 5; // 每次落一小簇（便于成片，又保留自定义密度）
-    if (this.player.coins < per * N) return this.pushToast(`🪙 金币不足（每簇约 ${per * N}🪙）`);
+    const N = Math.max(1, this.plantBrushN); // 5=一簇 / 1=单株精修（plantBrushN 由 UI 切换）
+    if (this.player.coins < per * N) return this.pushToast(`🪙 金币不足（${N > 1 ? '每簇' : '每株'}约 ${per * N}🪙）`);
     const q = getQuad(plotId);
     const top = q[0][1], pdep = Math.abs(q[2][1] - q[0][1]) || 1;
     const ig = this.idealGap(crop);

@@ -58,8 +58,9 @@ export function installFitBoard(root: HTMLElement, gameLayer: HTMLElement, onSca
   let panCand = false, panning = false;            // 平移：候选 / 已激活
   let dX = 0, dY = 0, sPanX = 0, sPanY = 0;        // 平移起点
 
+  const planting = () => document.body.classList.contains('fp-planting'); // 种植模式：手势让给田块(落点预览/种植)，不平移、不双击放大
   const onDown = (e: PointerEvent) => {
-    if (e.pointerType !== 'touch' || zoom <= 1) return; // 仅触摸、且放大态才进入平移候选
+    if (e.pointerType !== 'touch' || zoom <= 1 || planting()) return; // 仅触摸、放大态、非种植模式才进入平移候选
     const t = e.target as Element;
     if (!isGame(t) || isNode(t)) return; // 非画面 / 在路网节点上(让其自身拖动) → 不平移
     panCand = true; panning = false; dX = e.clientX; dY = e.clientY; sPanX = panX; sPanY = panY;
@@ -75,6 +76,7 @@ export function installFitBoard(root: HTMLElement, gameLayer: HTMLElement, onSca
   };
   const onUp = (e: PointerEvent) => {
     if (e.pointerType !== 'touch') return;
+    if (planting()) { panning = false; panCand = false; lastT = 0; return; } // 种植模式：把点击/双击让给田块（种植 + 落点预览）
     if (panning) { e.preventDefault(); e.stopPropagation(); panning = false; panCand = false; lastT = 0; return; }
     panCand = false;
     const t = e.target as Element;

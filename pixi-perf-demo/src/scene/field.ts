@@ -1,11 +1,18 @@
 import { Container, Sprite, Graphics, Texture, RenderTexture, type Renderer } from 'pixi.js';
-import { PLANT_SIZE, PLANT_SIZE_DEFAULT, CROP_BOTTOM } from '../data/crops';
+import { PLANT_SIZE, PLANT_SIZE_DEFAULT, CROP_BOTTOM, CROPS, type CropKey } from '../data/crops';
 import { STAGE_H, STAGE_W } from '../data/baseCorners';
 import { sceneLum, type WeatherType } from '../data/scenes';
 import { getQuad, plantHash, pctX, pctY } from '../sim/layout';
 import { isBgVeg } from '../data/vegMask';
 import { DRY_DEATH, type World } from '../sim/world';
 import type { PlantAtlas } from '../core/assets';
+
+// 作物代表色（用于种植可视化的预览圈/标记芯）：优先果色、否则叶色
+function cropColorOf(crop: CropKey): number {
+  const hex = (CROPS[crop]?.fruit || CROPS[crop]?.leaf || '#7ec943').replace('#', '');
+  const v = parseInt(hex, 16);
+  return Number.isFinite(v) ? v : 0x7ec943;
+}
 
 interface SpriteRec {
   sprite: Sprite;
@@ -77,6 +84,10 @@ export class Field {
   private roadEdges: [number, number][] = [];
   private lastShadowAlpha = 0.3; // 当前接地阴影强度（随天气/昼夜），供全量光影冠层投影同步浓度
   private actor: Container | null = null; // 机器人机身（放进作物层做深度排序；重建时需保留）
+  private plantFx = new Graphics(); // 种植可视化：已种点位标记 + 落点预览光标 + 落定脉冲
+  private w: World | null = null;   // 缓存最近 world，供指针事件读取（plant 模式判定/选种/株数）
+  private previewPt: { x: number; y: number } | null = null; // 落点预览（% 坐标）
+  private pulse: { x: number; y: number; t: number } | null = null; // 落定脉冲（%, 剩余 ms）
 
   constructor(private atlas: PlantAtlas, kinds: WeedKind[], private onPlotTap: (plotId: number, xPct: number, yPct: number) => void) {
     this.kinds = kinds;
@@ -90,7 +101,43 @@ export class Field {
     this.cropLayer.sortableChildren = true; // 作物 + 杂草 + 机器人机身 共用此层，按 y 纵深统一排序
     this.view.addChild(this.shadowLayer); // 投影在最底（背景之上、作物之下）
     this.view.addChild(this.cropLayer);
+    this.plantFx.eventMode = 'none';
+    this.view.addChild(this.plantFx); // 种植可视化：作物之上、命中层之下（不拦截指针）
     this.view.addChild(this.hitLayer);
+  }
+
+  private isPlantMode(): boolean { return !!this.w && this.w.mode === 'manual' && this.w.manualTool === 'plant'; }
+
+  // 种植可视化：已种点位标记(各活株小点) + 落点预览光标(圈+芯) + 落定脉冲(扩散环)。仅手动种植模式绘制。
+  private drawPlantFx(world: World, dtMS: number): void {
+    const g = this.plantFx; g.clear();
+    if (!this.isPlantMode()) { this.previewPt = null; this.pulse = null; return; }
+    // 已种点位标记（限量防密集卡顿）：白底小点 + 作物色芯 → 看清在哪儿、多密地种过
+    let n = 0;
+    for (const p of world.plots) {
+      for (const sl of p.slots) {
+        if (sl.phase !== 'grow' || sl.dead) continue;
+        const mx = pctX(sl.pt.x), my = pctY(sl.pt.y);
+        g.circle(mx, my, 3.1).fill({ color: 0xffffff, alpha: 0.4 });
+        g.circle(mx, my, 1.7).fill({ color: cropColorOf(sl.crop), alpha: 0.95 });
+        if (++n >= 140) break;
+      }
+      if (n >= 140) break;
+    }
+    const col = cropColorOf(world.manualSeed);
+    if (this.previewPt) { // 落点预览光标：圈(株数大小) + 中心芯
+      const px = pctX(this.previewPt.x), py = pctY(this.previewPt.y);
+      const rad = Math.max(1, world.plantBrushN) > 1 ? 27 : 13;
+      g.circle(px, py, rad).fill({ color: col, alpha: 0.13 });
+      g.circle(px, py, rad).stroke({ color: col, width: 2, alpha: 0.92 });
+      g.circle(px, py, 3.6).fill({ color: 0xffffff, alpha: 0.95 });
+      g.circle(px, py, 2).fill({ color: col, alpha: 1 });
+    }
+    if (this.pulse) { // 落定脉冲：扩散环
+      this.pulse.t -= dtMS;
+      if (this.pulse.t <= 0) this.pulse = null;
+      else { const k = 1 - this.pulse.t / 620; g.circle(pctX(this.pulse.x), pctY(this.pulse.y), 8 + k * 36).stroke({ color: col, width: 3, alpha: (1 - k) * 0.85 }); }
+    }
   }
 
   private mkShadow(): Sprite {
@@ -126,7 +173,12 @@ export class Field {
       g.poly(pts).fill({ color: 0xffffff, alpha: 0.0001 });
       g.eventMode = 'static';
       g.cursor = 'pointer';
-      g.on('pointertap', (e) => { const lp = e.getLocalPosition(this.hitLayer); this.onPlotTap(id, (lp.x / STAGE_W) * 100, (lp.y / STAGE_H) * 100); });
+      g.on('pointertap', (e) => { const lp = e.getLocalPosition(this.hitLayer); const x = (lp.x / STAGE_W) * 100, y = (lp.y / STAGE_H) * 100; this.onPlotTap(id, x, y); if (this.isPlantMode()) this.pulse = { x, y, t: 620 }; });
+      // 种植模式落点预览：按下/移动(桌面悬停或触摸按住)显示预览光标；抬起清除
+      g.on('pointerdown', (e) => { if (!this.isPlantMode()) return; const lp = e.getLocalPosition(this.hitLayer); this.previewPt = { x: (lp.x / STAGE_W) * 100, y: (lp.y / STAGE_H) * 100 }; });
+      g.on('pointermove', (e) => { if (!this.isPlantMode()) return; const lp = e.getLocalPosition(this.hitLayer); this.previewPt = { x: (lp.x / STAGE_W) * 100, y: (lp.y / STAGE_H) * 100 }; });
+      g.on('pointerup', () => { this.previewPt = null; });
+      g.on('pointerupoutside', () => { this.previewPt = null; });
       this.hitLayer.addChild(g);
     }
   }
@@ -302,11 +354,13 @@ export class Field {
   }
 
   update(world: World, dtMS: number) {
+    this.w = world; // 缓存供指针事件读取（plant 模式/选种/株数）
     // 机器人改种了不同作物的地块：按新作物布点重建该地块作物精灵（不动野草，避免整田重建闪烁）
     if (world.dirtyPlots.length) {
       for (const id of world.dirtyPlots) this.rebindPlotCrops(world, id);
       world.dirtyPlots.length = 0;
     }
+    this.drawPlantFx(world, dtMS); // 种植可视化（已种标记/落点预览/落定脉冲）
     const wx = world.weather.type as WeatherType;
     const lum = world.toggles.cropRelight
       ? sceneLum(world.tod, wx, world.weatherIntensity())
