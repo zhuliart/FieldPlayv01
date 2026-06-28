@@ -31,7 +31,9 @@ export class GameHud {
 
   // parent=#fp-root（菜单层，只受 fit 缩放）；gameLayer=#fp-game（画面层，随双击缩放/平移）。
   // 路网 SVG 必须与画布同步缩放 → 放进 gameLayer；其余 HUD 菜单留在 parent，放大时固定可见。
+  private host: HTMLElement; // #fp-root：基站 UI 挂这层（不随一键隐藏 this.root 而隐藏）
   constructor(parent: HTMLElement, private gameLayer: HTMLElement, private world: World) {
+    this.host = parent;
     const root = E('div', 'position:absolute; inset:0; width:1280px; height:720px; z-index:10; pointer-events:none; font-family:"Noto Sans SC",sans-serif;');
     this.root = root as HTMLDivElement;
 
@@ -536,7 +538,9 @@ export class GameHud {
     this.r.chargeBar = E('div', 'height:100%; width:86%; background:linear-gradient(90deg,#bff05f,#5da32e); border-radius:4px; transition:width .3s ease;');
     cbar.append(this.r.chargeBar);
     charge.append(crow, cbar);
-    this.root.appendChild(charge);
+    charge.style.zIndex = '11'; // 在 HUD 根(z=10)之上 → 移出根后仍正常显示/可点
+    this.r.chargeStation = charge;
+    this.host.appendChild(charge); // 挂到 #fp-root(而非 this.root) → 一键隐藏整层 HUD 时基站 UI 仍保留（用户要求从隐藏中移除）
   }
   private signLabel(icon: string, name: string, color: string, leftPct: number, topPct: number, onClick: () => void, tag?: string) {
     const wrap = E('div', `position:absolute; left:${leftPct}%; top:${topPct}%; transform:translate(-50%,0); cursor:pointer; display:flex; flex-direction:column; align-items:center; pointer-events:auto;`);
