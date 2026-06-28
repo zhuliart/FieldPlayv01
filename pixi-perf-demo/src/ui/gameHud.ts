@@ -602,7 +602,6 @@ export class GameHud {
     const planting = !auto && w.manualTool === 'plant';
     this.r.seedBrush.style.display = planting ? 'flex' : 'none';
     this.r.plantHint.style.display = planting ? 'flex' : 'none';
-    document.body.classList.toggle('fp-planting', planting); // 种植模式：stage 让出手势给田块(落点预览/种植)
     if (planting) {
       const c = w.manualSeed, fit = w.seasonFit(c), bn = Math.max(1, w.plantBrushN);
       this.r.plantHintText.textContent = `🌱 ${CROP_CN[c]} ×${bn}${bn > 1 ? '/簇' : '/株'} · ${fit >= 1 ? '应季✓' : '非应季·' + w.seasonName()} · 点地块落点种下`;

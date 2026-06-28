@@ -87,6 +87,8 @@ export class Field {
   private plantFx = new Graphics(); // 种植可视化：已种点位标记 + 落点预览光标 + 落定脉冲
   private w: World | null = null;   // 缓存最近 world，供指针事件读取（plant 模式判定/选种/株数）
   private previewPt: { x: number; y: number } | null = null; // 落点预览（% 坐标）
+  private pdownClient: { x: number; y: number } | null = null; // 按下时的屏幕坐标（判定拖动→平移则撤预览）
+  private tapDown: { x: number; y: number } | null = null; // 按下屏幕坐标（点击 vs 拖动判定：拖动=平移、不触发地块操作/种植）
   private pulse: { x: number; y: number; t: number } | null = null; // 落定脉冲（%, 剩余 ms）
 
   constructor(private atlas: PlantAtlas, kinds: WeedKind[], private onPlotTap: (plotId: number, xPct: number, yPct: number) => void) {
@@ -104,6 +106,11 @@ export class Field {
     this.plantFx.eventMode = 'none';
     this.view.addChild(this.plantFx); // 种植可视化：作物之上、命中层之下（不拦截指针）
     this.view.addChild(this.hitLayer);
+    // 落点预览的撤销（window 捕获，独立于 Pixi/stage 的事件吞掉）：抬手清除；拖动>10px(即变成平移)也清除 → 平移期间不残留预览圈
+    const clearPreview = () => { this.previewPt = null; this.pdownClient = null; };
+    window.addEventListener('pointerup', clearPreview, { capture: true });
+    window.addEventListener('pointercancel', clearPreview, { capture: true });
+    window.addEventListener('pointermove', (e) => { if (this.previewPt && this.pdownClient && Math.abs(e.clientX - this.pdownClient.x) + Math.abs(e.clientY - this.pdownClient.y) > 10) clearPreview(); }, { capture: true });
   }
 
   private isPlantMode(): boolean { return !!this.w && this.w.mode === 'manual' && this.w.manualTool === 'plant'; }
@@ -173,12 +180,20 @@ export class Field {
       g.poly(pts).fill({ color: 0xffffff, alpha: 0.0001 });
       g.eventMode = 'static';
       g.cursor = 'pointer';
-      g.on('pointertap', (e) => { const lp = e.getLocalPosition(this.hitLayer); const x = (lp.x / STAGE_W) * 100, y = (lp.y / STAGE_H) * 100; this.onPlotTap(id, x, y); if (this.isPlantMode()) this.pulse = { x, y, t: 620 }; });
-      // 种植模式落点预览：按下/移动(桌面悬停或触摸按住)显示预览光标；抬起清除
-      g.on('pointerdown', (e) => { if (!this.isPlantMode()) return; const lp = e.getLocalPosition(this.hitLayer); this.previewPt = { x: (lp.x / STAGE_W) * 100, y: (lp.y / STAGE_H) * 100 }; });
-      g.on('pointermove', (e) => { if (!this.isPlantMode()) return; const lp = e.getLocalPosition(this.hitLayer); this.previewPt = { x: (lp.x / STAGE_W) * 100, y: (lp.y / STAGE_H) * 100 }; });
-      g.on('pointerup', () => { this.previewPt = null; });
-      g.on('pointerupoutside', () => { this.previewPt = null; });
+      // 点击=种植(种植模式)/作业(其他工具)；种植落点画脉冲。仅「轻点」触发——拖动(平移)从按下到抬起位移大则跳过(Pixi 同地块拖动仍会触发 pointertap，故自行判定)
+      g.on('pointertap', (e) => {
+        if (this.tapDown && Math.abs(e.clientX - this.tapDown.x) + Math.abs(e.clientY - this.tapDown.y) > 10) return; // 拖动=平移，不触发地块操作/种植
+        const lp = e.getLocalPosition(this.hitLayer); const x = (lp.x / STAGE_W) * 100, y = (lp.y / STAGE_H) * 100;
+        this.onPlotTap(id, x, y); if (this.isPlantMode()) this.pulse = { x, y, t: 620 };
+      });
+      // 按下记录屏幕坐标（点击/拖动判定）；种植模式额外显示落点预览光标（清空在 window 监听：抬起/拖动平移都撤销）
+      g.on('pointerdown', (e) => {
+        this.tapDown = { x: e.clientX, y: e.clientY };
+        if (!this.isPlantMode()) return;
+        const lp = e.getLocalPosition(this.hitLayer);
+        this.previewPt = { x: (lp.x / STAGE_W) * 100, y: (lp.y / STAGE_H) * 100 };
+        this.pdownClient = { x: e.clientX, y: e.clientY };
+      });
       this.hitLayer.addChild(g);
     }
   }
