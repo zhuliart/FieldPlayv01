@@ -99,6 +99,7 @@ export interface RobotState {
   moving: boolean;
   module: string | null;
   hidden: boolean; // 进入商店/仓库办理时视觉消失
+  charging: boolean; // 在基站充电中 → 机器人头部显示充电进度，离站自动关闭
 }
 
 export interface Toggles {
@@ -273,7 +274,7 @@ export class World {
   dirtyPlots: number[] = [];
 
   plots: Plot[] = [];
-  robot: RobotState = { ...MAP.robotHome, face: Math.PI, moving: false, module: null, hidden: false };
+  robot: RobotState = { ...MAP.robotHome, face: Math.PI, moving: false, module: null, hidden: false, charging: false };
 
   toggles: Toggles = {
     lightPool: true,
@@ -804,6 +805,7 @@ export class World {
     this.rPathIdx = 0;
     this.rDidTask = false;
     this.rPhase = 'move';
+    this.robot.charging = false; // 离站去新任务 → 关闭头部充电 UI
     this.robot.module = MOD_FOR[task.kind] || null;
   }
 
@@ -860,10 +862,11 @@ export class World {
     const t = this.rTask!;
     this.robot.moving = false;
     this.robot.module = null;
+    this.robot.charging = true; // 头部充电进度 UI 开关（robot.ts 读取）
     const rate = 7 * (1 - this.ai.wear * 0.7) * (dtMS / 700); // 每 ~700ms +7（老化拖慢充电）
     this.robotBattery = Math.min(100, this.robotBattery + rate);
     this.robotAction = (t.kind === 'idle' ? '待命充电 ' : '充电中 ') + Math.round(this.robotBattery) + '%';
-    if (this.robotBattery >= (t.kind === 'idle' ? 100 : 60)) { this.learnFromTask(); this.rPhase = 'decide'; this.rTask = null; }
+    if (this.robotBattery >= (t.kind === 'idle' ? 100 : 60)) { this.robot.charging = false; this.learnFromTask(); this.rPhase = 'decide'; this.rTask = null; }
   }
 
   // 执行作业：资源消耗 + 经济入账 + 粒子

@@ -227,13 +227,13 @@ async function boot() {
       setTimeout(() => { if (hideHint === hint) { hint.remove(); hideHint = null; } }, 1950);
     }
   };
-  // 桌面：T 键（避开输入框，本项目虽无输入框，稳妥起见判断）
+  // 桌面键盘：T=一键隐藏全部 UI；E=单独开关基站 UI（避开输入框/系统快捷键）
   window.addEventListener('keydown', (e) => {
-    if (e.key !== 't' && e.key !== 'T') return;
     if (e.ctrlKey || e.metaKey || e.altKey) return; // 不抢系统快捷键
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    toggleUi();
+    if (e.key === 't' || e.key === 'T') toggleUi();
+    else if (e.key === 'e' || e.key === 'E') gameHud.toggleStation();
   });
   // 移动端：三连击屏幕（同一区域内 3 次快速点按 → 与正常分散的游戏点击区分）
   let taps: number[] = []; let tapX = 0; let tapY = 0;

@@ -86,6 +86,14 @@ export class GameHud {
   }
   get isUiHidden(): boolean { return this.uiHidden; }
 
+  // 基站 UI（充电站牌）独立开关：桌面 E 键切换显隐（与一键隐藏 T 互不影响；放大态仍受 .fp-world 规则隐藏）
+  private stationHidden = false;
+  toggleStation(): boolean {
+    this.stationHidden = !this.stationHidden;
+    if (this.r.chargeStation) this.r.chargeStation.style.display = this.stationHidden ? 'none' : '';
+    return this.stationHidden;
+  }
+
   // ============ 顶部左：昼夜时钟 + 实时天气 芯片 ============
   private buildClockChip() {
     const box = E('div', 'position:absolute; top:14px; left:14px; width:188px; display:flex; align-items:center; gap:8px; background:linear-gradient(rgba(38,52,74,.92),rgba(26,38,58,.92)); border:1.5px solid rgba(176,134,63,.45); border-radius:13px; padding:6px 12px 6px 10px; box-shadow:0 5px 14px rgba(0,0,0,.26); pointer-events:auto;');
