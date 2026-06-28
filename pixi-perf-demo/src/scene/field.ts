@@ -4,8 +4,9 @@ import { STAGE_H, STAGE_W } from '../data/baseCorners';
 import { sceneLum, type WeatherType } from '../data/scenes';
 import { getQuad, plantHash, pctX, pctY } from '../sim/layout';
 import { isBgVeg } from '../data/vegMask';
-import { DRY_DEATH, type World } from '../sim/world';
+import { DRY_DEATH, type World, type Slot } from '../sim/world';
 import type { PlantAtlas } from '../core/assets';
+import { CornPlantView } from './cornPlant';
 
 // 作物代表色（用于种植可视化的预览圈/标记芯）：优先果色、否则叶色
 function cropColorOf(crop: CropKey): number {
@@ -14,9 +15,8 @@ function cropColorOf(crop: CropKey): number {
   return Number.isFinite(v) ? v : 0x7ec943;
 }
 
-interface SpriteRec {
-  sprite: Sprite;
-  sprite2: Sprite; // 下一阶段贴图（按阶段内进度 frac 交叉淡入，平滑形态过渡、消除突变）
+// 植株记录：番茄/生菜/辣椒/小麦走双 Sprite 交叉淡入；玉米走预制图集 CornPlantView（独立叶/主干模块）。
+interface PlantRecBase {
   plotId: number;
   slotIdx: number;
   depth: number;
@@ -32,6 +32,20 @@ interface SpriteRec {
   colorVar: number; // 每株自然色彩随机（乘法 tint）：有的更红/橙、有的偏黄绿
   shadow: Sprite;   // 接地软阴影
 }
+interface StandardPlantRec extends PlantRecBase {
+  kind: 'standard';
+  sprite: Sprite;
+  sprite2: Sprite; // 下一阶段贴图（按阶段内进度 frac 交叉淡入，平滑形态过渡、消除突变）
+}
+interface CornPlantRec extends PlantRecBase {
+  kind: 'corn';
+  view: CornPlantView; // 预制图集玉米视图（阶段图 + 衰老叶/主干模块）
+}
+type PlantRec = StandardPlantRec | CornPlantRec;
+
+// 玉米株高微调：新图集已裁掉大片透明边（旧图根锚 ~0.835、含留白），同 heightPx 下新图会偏大，
+// 故乘一个系数把视觉尺寸拉回接近旧玉米。仅影响玉米，不动其它作物。
+const CORN_HEIGHT_K = 0.72;
 
 // 野草类型定义（习性分类 + 尺寸层级 + 蔓延形态 + 可生长区域）。由 main.ts 登记表加载贴图后构造。
 export interface WeedKind {
@@ -71,7 +85,7 @@ export class Field {
   private hitLayer = new Container();
   private shadowLayer = new Container(); // 投影层（作物层之下、背景之上）：野草/作物的接地软阴影
   private shadowTex: Texture;
-  private recs: SpriteRec[] = [];
+  private recs: PlantRec[] = [];
   private kinds: WeedKind[] = [];
   private fieldKinds: number[] = []; // 可长在田里的类型索引
   private wildKinds: number[] = [];  // 可长在野地的类型索引
@@ -198,6 +212,35 @@ export class Field {
     }
   }
 
+  // 统一植株记录工厂（rebuild 与 rebindPlotCrops 共用 → 玉米/标准创建逻辑各只写一处）。
+  private createPlantRec(plotId: number, idx: number, sl: Slot, pdepPct: number): PlantRec {
+    const base = {
+      plotId, slotIdx: idx, depth: sl.pt.depth,
+      sizeJit: 0.84 + plantHash(plotId, idx, 11) * 0.34,
+      restAng: (plantHash(plotId, idx, 12) - 0.5) * 16,
+      pdepPct,
+      r1: plantHash(plotId, idx, 1), r2: plantHash(plotId, idx, 2), r3: plantHash(plotId, idx, 3), r4: plantHash(plotId, idx, 4),
+      curLodge: 0, colorVar: makeColorVar(plotId, idx), shadow: this.mkShadow(),
+    };
+    if (sl.crop === 'corn') {
+      const view = new CornPlantView(this.atlas, plotId, idx);
+      view.position.set(pctX(sl.pt.x), pctY(sl.pt.y));
+      view.zIndex = sl.pt.y; // 整株作为一个纵深单位与作物/机身按 y 排序
+      view.visible = false;
+      this.cropLayer.addChild(view);
+      return { kind: 'corn', view, ...base };
+    }
+    const mk = () => {
+      const s = new Sprite(this.atlas.get(`plant_${sl.crop}_s1`));
+      s.anchor.set(0.5, 0.68);
+      s.position.set(pctX(sl.pt.x), pctY(sl.pt.y));
+      s.zIndex = sl.pt.y; // 近(下)在前
+      this.cropLayer.addChild(s);
+      return s;
+    };
+    return { kind: 'standard', sprite: mk(), sprite2: mk(), ...base };
+  }
+
   rebuild(world: World) {
     this.cropLayer.removeChildren();
     this.shadowLayer.removeChildren();
@@ -210,35 +253,7 @@ export class Field {
     for (const p of world.plots) {
       const q = getQuad(p.id);
       const pdepPct = Math.abs(q[2][1] - q[0][1]) || 1;
-      p.slots.forEach((sl, idx) => {
-        const mk = () => {
-          const s = new Sprite(this.atlas.get(`plant_${sl.crop}_s1`));
-          s.anchor.set(0.5, 0.68);
-          s.position.set(pctX(sl.pt.x), pctY(sl.pt.y));
-          s.zIndex = sl.pt.y; // 近(下)在前
-          this.cropLayer.addChild(s);
-          return s;
-        };
-        const sprite = mk();  // 当前阶段（下层）
-        const sprite2 = mk(); // 下一阶段（上层，交叉淡入）
-        this.recs.push({
-          sprite,
-          sprite2,
-          plotId: p.id,
-          slotIdx: idx,
-          depth: sl.pt.depth,
-          sizeJit: 0.84 + plantHash(p.id, idx, 11) * 0.34,
-          restAng: (plantHash(p.id, idx, 12) - 0.5) * 16,
-          pdepPct,
-          r1: plantHash(p.id, idx, 1),
-          r2: plantHash(p.id, idx, 2),
-          r3: plantHash(p.id, idx, 3),
-          r4: plantHash(p.id, idx, 4),
-          curLodge: 0,
-          colorVar: makeColorVar(p.id, idx),
-          shadow: this.mkShadow(),
-        });
-      });
+      p.slots.forEach((sl, idx) => { this.recs.push(this.createPlantRec(p.id, idx, sl, pdepPct)); });
       // 田内杂草：每地块预置 12 株。恶性草仅占固定 2 槽位(k=4/9，低 appearAt→侵染中期才冒出)，其余 10 株全为非恶性田草
       // → 大幅降低恶性草在田里的密度；普通草用密集递进 appear，提高其出现率。
       let regIdx = 0;
@@ -333,11 +348,11 @@ export class Field {
 
   // 重建单个地块的作物精灵：机器人改种不同作物后按新 autoPoints 布点重排（销毁旧精灵→建新精灵，不触碰野草）。
   private rebindPlotCrops(world: World, plotId: number): void {
-    const keep: SpriteRec[] = [];
+    const keep: PlantRec[] = [];
     for (const rec of this.recs) {
-      if (rec.plotId === plotId) {
-        this.cropLayer.removeChild(rec.sprite); rec.sprite.destroy();
-        this.cropLayer.removeChild(rec.sprite2); rec.sprite2.destroy();
+      if (rec.plotId === plotId) { // 销毁旧记录的全部显示对象（玉米 Container / 标准双 Sprite）+ 阴影，不留失效引用
+        if (rec.kind === 'corn') { this.cropLayer.removeChild(rec.view); rec.view.destroy(); }
+        else { this.cropLayer.removeChild(rec.sprite); rec.sprite.destroy(); this.cropLayer.removeChild(rec.sprite2); rec.sprite2.destroy(); }
         this.shadowLayer.removeChild(rec.shadow); rec.shadow.destroy();
       } else keep.push(rec);
     }
@@ -346,26 +361,7 @@ export class Field {
     if (!p) return;
     const q = getQuad(plotId);
     const pdepPct = Math.abs(q[2][1] - q[0][1]) || 1;
-    p.slots.forEach((sl, idx) => {
-      const mk = () => {
-        const s = new Sprite(this.atlas.get(`plant_${sl.crop}_s1`));
-        s.anchor.set(0.5, 0.68);
-        s.position.set(pctX(sl.pt.x), pctY(sl.pt.y));
-        s.zIndex = sl.pt.y;
-        this.cropLayer.addChild(s);
-        return s;
-      };
-      const sprite = mk();
-      const sprite2 = mk();
-      this.recs.push({
-        sprite, sprite2, plotId, slotIdx: idx, depth: sl.pt.depth,
-        sizeJit: 0.84 + plantHash(plotId, idx, 11) * 0.34,
-        restAng: (plantHash(plotId, idx, 12) - 0.5) * 16,
-        pdepPct,
-        r1: plantHash(plotId, idx, 1), r2: plantHash(plotId, idx, 2), r3: plantHash(plotId, idx, 3), r4: plantHash(plotId, idx, 4),
-        curLodge: 0, colorVar: makeColorVar(plotId, idx), shadow: this.mkShadow(),
-      });
-    });
+    p.slots.forEach((sl, idx) => { this.recs.push(this.createPlantRec(plotId, idx, sl, pdepPct)); });
   }
 
   update(world: World, dtMS: number) {
@@ -388,20 +384,40 @@ export class Field {
     for (const rec of this.recs) {
       const plot = world.plots[rec.plotId];
       const sl = plot?.slots[rec.slotIdx];
-      if (!sl) { rec.shadow.visible = false; continue; }
-      const a = rec.sprite, b = rec.sprite2;
+      if (!sl) { rec.shadow.visible = false; if (rec.kind === 'corn') rec.view.visible = false; else { rec.sprite.visible = false; rec.sprite2.visible = false; } continue; }
       // 收割后空置 / 翻耕 / 出苗期：隐藏作物，露出裸土（收割→翻耕→播种 轮作过程可见）
       const bare = sl.fallowMS > 0 || sl.phase !== 'grow';
-      a.visible = !bare; b.visible = !bare;
-      if (bare) { rec.shadow.visible = false; continue; }
-
       const growthCont = Math.max(0, Math.min(4, sl.growth / 100));
       const stage = Math.min(4, Math.floor(growthCont));
       const frac = growthCont - stage; // 阶段内进度 0..1
       const upper = Math.min(4, stage + 1);
+      const gScale = 0.4 + 0.6 * (growthCont / 4); // 近大远小 + 随生长连续平滑变大（高度连续）
 
-      // 近大远小 + 随生长连续平滑变大（高度连续，无突变）
-      const gScale = 0.4 + 0.6 * (growthCont / 4);
+      // —— 玉米：预制图集视图（5 阶段完整图 + 衰老叶/主干模块）——
+      if (rec.kind === 'corn') {
+        if (bare) { rec.view.visible = false; rec.shadow.visible = false; continue; }
+        rec.view.visible = true;
+        const sizeBase = PLANT_SIZE.corn ?? PLANT_SIZE_DEFAULT;
+        const hPct = rec.pdepPct * (sizeBase + 0.18 * rec.depth) * rec.sizeJit * gScale;
+        const heightPx = (hPct / 100) * STAGE_H * CORN_HEIGHT_K;
+        const bend = computeBend(sl, wx, stage); // 与标准作物同一套倒伏机制
+        const durMS = (0.85 + rec.r4 * 1.9) * 1000;
+        rec.curLodge += (computeLodgeTarget(bend, rec.r1, rec.r2, rec.r3, sl.dead) - rec.curLodge) * Math.min(1, dtMS / durMS);
+        const rotation = ((rec.restAng + rec.curLodge) * Math.PI) / 180;
+        const wither = cornWither(sl, wx, stage); // 由 Slot 真实状态统一计算（不脱节）
+        const baseTint = sl.dead ? multiplyColor(relight, deathTintOf(sl.deathKind)) : multiplyColor(multiplyColor(relight, cornStress(sl, wx, stage)), rec.colorVar);
+        const partTint = sl.dead ? multiplyColor(relight, deathTintOf(sl.deathKind)) : relight; // 主干/叶：环境光（死亡叠死亡色）；不强染已黄/干的模块
+        rec.view.update({ stage, upper, frac, heightPx, wither, rotation, baseTint, partTint, dead: sl.dead });
+        // 阴影：玉米主体在 Container 内(局部 0,0)，故用根部世界坐标 view.x/y + 当前主导基底贴图绘制（不随 Container 旋转）
+        applyShadow(rec.shadow, rec.view.baseTex, 0.5, rec.view.baseAnchorY, rec.view.baseScaleX, rec.view.baseScaleY, rec.view.x, rec.view.y, heightPx, Math.abs(rec.view.baseTex.width * rec.view.baseScaleX), shadowAlpha * 0.72);
+        continue;
+      }
+
+      // —— 标准作物（番茄/生菜/辣椒/小麦）：双 Sprite 交叉淡入 ——
+      const a = rec.sprite, b = rec.sprite2;
+      a.visible = !bare; b.visible = !bare;
+      if (bare) { rec.shadow.visible = false; continue; }
+
       const sizeBase = PLANT_SIZE[sl.crop] ?? PLANT_SIZE_DEFAULT;
       const hPct = rec.pdepPct * (sizeBase + 0.18 * rec.depth) * rec.sizeJit * gScale;
       const heightPx = (hPct / 100) * STAGE_H;
@@ -415,29 +431,9 @@ export class Field {
       b.scale.set(heightPx / (b.texture.height || 1));
 
       // —— 倒伏（lodging）：受灾/缺水/过熟/死亡 → bend，方向/幅度/速度/延迟各株不同（两层同步）——
-      const wsev = wx === 'rain' ? sl.flood : wx === 'drought' ? sl.parch : wx === 'frost' ? sl.frost : 0;
-      let bend = 0;
-      if (wsev > 0) bend = Math.max(bend, Math.min(1, wsev / 4));
-      if (!sl.dead && stage < 4 && sl.dry > 0) {
-        const thr = DRY_DEATH[stage] || 5;
-        bend = Math.max(bend, Math.min(0.9, sl.dry / thr));
-      }
-      if (!sl.dead && sl.growth >= 400) {
-        const ag = Math.max(0, sl.age - 5);
-        if (ag > 0) bend = Math.max(bend, Math.min(0.65, ag / 11));
-      }
-      if (sl.dead) bend = Math.max(bend, sl.deathKind === 'frozen' ? 0.78 : 0.96);
-
-      let targetLodge = 0;
-      if (bend > 0.002) {
-        const sgn = rec.r1 < 0.5 ? -1 : 1;
-        const amt = 0.4 + 0.6 * rec.r2;
-        const mag = bend * (sl.dead ? 46 + rec.r2 * 34 : 24 + rec.r3 * 30);
-        targetLodge = sgn * amt * mag + (rec.r3 - 0.5) * 18;
-      }
-      // 每株倒速 0.85–2.75s（hash4），平滑逼近
-      const durMS = (0.85 + rec.r4 * 1.9) * 1000;
-      rec.curLodge += (targetLodge - rec.curLodge) * Math.min(1, dtMS / durMS);
+      const bend = computeBend(sl, wx, stage);
+      const durMS = (0.85 + rec.r4 * 1.9) * 1000; // 每株倒速 0.85–2.75s（hash4），平滑逼近
+      rec.curLodge += (computeLodgeTarget(bend, rec.r1, rec.r2, rec.r3, sl.dead) - rec.curLodge) * Math.min(1, dtMS / durMS);
       const rot = ((rec.restAng + rec.curLodge) * Math.PI) / 180;
       a.rotation = rot; b.rotation = rot;
 
@@ -607,17 +603,19 @@ function makeShadowTexture(): Texture {
 //    再压扁(FLATTEN)铺展、沿固定光向切变(SKEW)躺地；锚点直接拷植株锚点 → 根部与植株严丝合缝(消除悬浮)。
 //  · 彗星团(远/小株 LOD 兜底，或 SH_MODE='blob' 回退)：原接地软团，锚点=接地浓团、旋到右下、长随株高宽随冠幅 renderW。
 // 方向固定(右下，匹配背景烘焙树影)，绝不随昼夜旋转；浓度走传入 alpha(源自 shadowAlpha 天气×昼夜模型)。
-function setShadow(sh: Sprite, src: Sprite, hPx: number, renderW: number, alpha: number) {
+// 显式参数版：贴图/锚点/缩放/世界坐标都直接传入 → 既支持精灵(标准作物/野草)，也支持玉米
+// (主体在 Container 内、局部坐标为 0,0，必须用 Container 的根部世界坐标 worldX/worldY，否则阴影会跑到舞台 (0,0))。
+function applyShadow(sh: Sprite, tex: Texture, anchorX: number, anchorY: number, scaleX: number, scaleY: number, worldX: number, worldY: number, hPx: number, renderW: number, alpha: number) {
   sh.visible = true;
   const useSil = SH_MODE === 'silhouette' && hPx >= SH_SIL_MIN_PX;
   if (useSil) {
-    if (sh.texture !== src.texture) sh.texture = src.texture; // 换生长阶段时同步贴图，带去重(避免每帧重绑)
-    sh.anchor.copyFrom(src.anchor); // 锚点=植株锚点 → 根部严格重合（含作物随阶段变化的 CROP_BOTTOM、野草 0.99）
-    sh.position.set(src.x, src.y);
+    if (sh.texture !== tex) sh.texture = tex; // 换生长阶段/主干时同步贴图，带去重(避免每帧重绑)
+    sh.anchor.set(anchorX, anchorY); // 锚点=植株锚点 → 根部严格重合
+    sh.position.set(worldX, worldY);
     sh.rotation = 0;                // 不叠加植株休止角/倒伏旋转（否则影子会"站起来"）
     sh.skew.x = SH_SIL_SKEW;        // 固定光向切变（ObservablePoint 同值自动去重，等同"设一次"）
-    // 竖向翻转(负 scale.y)→ 枝叶投向右下地面；FLATTEN 控制铺展长度；等宽随植株(翻转时跟随 src.scale.x 正负)
-    sh.scale.set(src.scale.x, -Math.abs(src.scale.y) * SH_SIL_FLATTEN);
+    // 竖向翻转(负 scale.y)→ 枝叶投向右下地面；FLATTEN 控制铺展长度；等宽随植株(翻转时跟随 scaleX 正负)
+    sh.scale.set(scaleX, -Math.abs(scaleY) * SH_SIL_FLATTEN);
     sh.tint = SH_SIL_TINT;
     sh.alpha = alpha * SH_SIL_ALPHA_K;
   } else {
@@ -629,10 +627,14 @@ function setShadow(sh: Sprite, src: Sprite, hPx: number, renderW: number, alpha:
     const len = Math.min(hPx * 1.25, foot * SH_LEN_BASE + hPx * SH_LEN_H); // 高株投影更长，封顶不过界
     const wid = Math.max(foot * SH_WID, len * 0.34);                       // 宽度下限：矮株也不至于细成线
     sh.rotation = SH_ANGLE;
-    sh.position.set(src.x, src.y + hPx * 0.01); // 贴根（浓团即接地点，几乎不偏移 → 牢牢咬住地面）
+    sh.position.set(worldX, worldY + hPx * 0.01); // 贴根（浓团即接地点，几乎不偏移 → 牢牢咬住地面）
     sh.scale.set(len / SH_TEX_W, wid / SH_TEX_H);
     sh.alpha = alpha;
   }
+}
+// 精灵版（标准作物/野草）：从精灵自身世界坐标 + 贴图/锚点/缩放取参，转交 applyShadow。
+function setShadow(sh: Sprite, src: Sprite, hPx: number, renderW: number, alpha: number) {
+  applyShadow(sh, src.texture, src.anchor.x, src.anchor.y, src.scale.x, src.scale.y, src.x, src.y, hPx, renderW, alpha);
 }
 // 渲染一株野草：连续生长(补偿阶段relH，消除换阶段突然变大) + 枯萎转黑/缩/倒 + 接地阴影。setTex(stage) 按需换贴图。
 function drawWeed(sp: Sprite, sh: Sprite, kind: WeedKind, targetH: number, life: number, phase: number, wither: number, lodge: number, restAng: number, colorVar: number, relight: number, shadowAlpha: number, fade: number, setTex: (stage: number) => void): void {
@@ -664,6 +666,50 @@ function multiplyColor(a: number, b: number): number {
   const g = (((a >> 8) & 255) * ((b >> 8) & 255)) / 255;
   const bl = ((a & 255) * (b & 255)) / 255;
   return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(bl);
+}
+function clamp01(v: number): number { return v < 0 ? 0 : v > 1 ? 1 : v; }
+// 倒伏强度 bend(0..1)：受灾(涝/旱/冻) / 缺水 / 过熟 / 死亡。标准作物与玉米共用 → 表现一致。
+function computeBend(sl: Slot, wx: WeatherType, stage: number): number {
+  const wsev = wx === 'rain' ? sl.flood : wx === 'drought' ? sl.parch : wx === 'frost' ? sl.frost : 0;
+  let bend = 0;
+  if (wsev > 0) bend = Math.max(bend, Math.min(1, wsev / 4));
+  if (!sl.dead && stage < 4 && sl.dry > 0) bend = Math.max(bend, Math.min(0.9, sl.dry / (DRY_DEATH[stage] || 5)));
+  if (!sl.dead && sl.growth >= 400) { const ag = Math.max(0, sl.age - 5); if (ag > 0) bend = Math.max(bend, Math.min(0.65, ag / 11)); }
+  if (sl.dead) bend = Math.max(bend, sl.deathKind === 'frozen' ? 0.78 : 0.96);
+  return bend;
+}
+// 倒伏目标角(度)：方向/幅度/最大角各株不同（hash r1..r3）→ 不会所有枯株向同一方向倒。
+function computeLodgeTarget(bend: number, r1: number, r2: number, r3: number, dead: boolean): number {
+  if (bend <= 0.002) return 0;
+  const sgn = r1 < 0.5 ? -1 : 1;
+  const amt = 0.4 + 0.6 * r2;
+  const mag = bend * (dead ? 46 + r2 * 34 : 24 + r3 * 30);
+  return sgn * amt * mag + (r3 - 0.5) * 18;
+}
+// 玉米衰老强度(0..1)：由 Slot 真实状态统一计算（过熟老化 / 缺水 / 旱·冻·涝 / 死亡）→ 驱动黄化/干枯/缺叶/枯萎主干。
+function cornWither(sl: Slot, wx: WeatherType, stage: number): number {
+  if (sl.dead) return 1;
+  let w = 0;
+  if (sl.growth >= 400) w = Math.max(w, clamp01((sl.age - 5) / 11));
+  if (stage < 4 && sl.dry > 0) w = Math.max(w, clamp01(sl.dry / (DRY_DEATH[stage] || 5)));
+  if (wx === 'drought' && sl.parch > 0) w = Math.max(w, clamp01(sl.parch / 4));
+  if (wx === 'frost' && sl.frost > 0) w = Math.max(w, clamp01(sl.frost / 4) * 0.85);
+  if (wx === 'rain' && sl.flood > 0) w = Math.max(w, clamp01(sl.flood / 4) * 0.7);
+  return w;
+}
+// 玉米阶段图的轻应激色（非死亡；明显干枯/黄化主要靠真实模块叶表现，故 base 只轻染、不与模块叠成同色）。
+function cornStress(sl: Slot, wx: WeatherType, stage: number): number {
+  if (sl.dead || (sl.growth >= 400 && sl.age > 5)) return 0xffffff; // 过熟/死亡靠衰老叶+主干，不强染 base
+  if (stage < 4) {
+    if (wx === 'drought' && (sl.parch > 0 || sl.dry > 0)) return 0xecd89a;
+    if (wx === 'frost' && sl.frost > 0) return 0xd2e2f3;
+    if (wx === 'rain' && sl.flood > 0) return 0xc0cdab;
+  }
+  return 0xffffff;
+}
+// 死亡色：冻死冷蓝 / 烂根暗橄榄 / 旱·过熟棕褐（与标准作物一致）。
+function deathTintOf(kind: Slot['deathKind']): number {
+  return kind === 'frozen' ? 0x9fb1d0 : kind === 'rot' ? 0x5c6b46 : 0x6f5530;
 }
 // 每株自然色彩随机（乘法 tint，确定性）：约 38% 偏红/橙、40% 偏黄绿、22% 中性微暖 →
 // 同一作物里有的更红、有的橙红、有的黄绿，像真实田里的个体差异。

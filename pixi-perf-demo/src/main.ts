@@ -266,7 +266,7 @@ async function boot() {
   });
 
   // 调试句柄
-  (window as unknown as { __fp: unknown }).__fp = { app, world, field, particles, stats };
+  (window as unknown as { __fp: unknown }).__fp = { app, world, field, atlas, particles, stats };
 }
 
 boot().catch((e) => {
