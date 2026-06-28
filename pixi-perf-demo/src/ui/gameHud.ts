@@ -371,10 +371,14 @@ export class GameHud {
     let moved = false;
     const downXY = { x: 0, y: 0 };
     const toPct = (e: PointerEvent) => {
-      const m = svg.getScreenCTM();
-      if (!m) return null;
-      const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse());
-      return { left: Math.max(0, Math.min(100, (p.x / 1280) * 100)), top: Math.max(0, Math.min(100, (p.y / 720) * 100)) };
+      // 用 SVG 的「实际屏幕矩形」直接换算百分比 → 天然兼容祖先 CSS scale。
+      // ⚠️ 勿用 getScreenCTM：iOS Safari/WebKit 的 getScreenCTM 不计入祖先 HTML 元素的 CSS transform
+      //（#fp-root 的 scale）→ 反变换后落点全错、节点全堆到画面左上角天空。getBoundingClientRect 各浏览器都返回真实渲染矩形。
+      const r = svg.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      const left = ((e.clientX - r.left) / r.width) * 100;
+      const top = ((e.clientY - r.top) / r.height) * 100;
+      return { left: Math.max(0, Math.min(100, left)), top: Math.max(0, Math.min(100, top)) };
     };
     svg.addEventListener('pointerdown', (e) => {
       const ni = (e.target as Element).getAttribute?.('data-node');
