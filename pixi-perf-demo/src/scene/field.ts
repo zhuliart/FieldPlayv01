@@ -406,7 +406,7 @@ export class Field {
         const rotation = ((rec.restAng + rec.curLodge) * Math.PI) / 180;
         const wither = cornWither(sl, wx, stage); // 由 Slot 真实状态统一计算（不脱节）
         const baseTint = sl.dead ? multiplyColor(relight, deathTintOf(sl.deathKind)) : multiplyColor(multiplyColor(relight, cornStress(sl, wx, stage)), rec.colorVar);
-        const partTint = sl.dead ? multiplyColor(relight, deathTintOf(sl.deathKind)) : relight; // 主干/叶：环境光（死亡叠死亡色）；不强染已黄/干的模块
+        const partTint = sl.dead ? multiplyColor(relight, cornDeathTint(sl.deathKind)) : relight; // 主干/叶：环境光（死亡仅轻度色偏，干叶贴图本就枯黄，勿用深褐 deathTintOf 二次压黑）
         rec.view.update({ stage, upper, frac, heightPx, wither, rotation, baseTint, partTint, dead: sl.dead });
         // 阴影：玉米主体在 Container 内(局部 0,0)，故用根部世界坐标 view.x/y + 当前主导基底贴图绘制（不随 Container 旋转）
         applyShadow(rec.shadow, rec.view.baseTex, 0.5, rec.view.baseAnchorY, rec.view.baseScaleX, rec.view.baseScaleY, rec.view.x, rec.view.y, heightPx, Math.abs(rec.view.baseTex.width * rec.view.baseScaleX), shadowAlpha * 0.72);
@@ -710,6 +710,15 @@ function cornStress(sl: Slot, wx: WeatherType, stage: number): number {
 // 死亡色：冻死冷蓝 / 烂根暗橄榄 / 旱·过熟棕褐（与标准作物一致）。
 function deathTintOf(kind: Slot['deathKind']): number {
   return kind === 'frozen' ? 0x9fb1d0 : kind === 'rot' ? 0x5c6b46 : 0x6f5530;
+}
+// 玉米枯死部件色（仅玉米用）：干叶/枯主干贴图本就是金棕/枯黄（自然玉米秸秆 stover 色），
+// 故只做「轻度」色偏、几乎不压暗——不像标准作物那样用深褐死亡色重染。否则金棕贴图被
+// 深褐 deathTintOf multiply 二次压暗、再叠夜间冷暗环境光 → 叶片近黑（用户实测枯萎与正常差距过大）。
+// 目标：枯死玉米呈金黄/枯褐的干秸样、与场景同明度，只是颜色由绿转枯，而非塌成一团黑。
+function cornDeathTint(kind: Slot['deathKind']): number {
+  return kind === 'frozen' ? 0xcdd6e4   // 冻死：冷调微蓝、整体仍明亮
+       : kind === 'rot'    ? 0xc2c293   // 烂根：略暗的橄榄枯黄，但保持明亮
+       :                     0xe6d9bb;  // 旱/过熟：贴近金棕本色、几乎不压暗
 }
 // 每株自然色彩随机（乘法 tint，确定性）：约 38% 偏红/橙、40% 偏黄绿、22% 中性微暖 →
 // 同一作物里有的更红、有的橙红、有的黄绿，像真实田里的个体差异。
