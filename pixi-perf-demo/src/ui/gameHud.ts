@@ -29,7 +29,9 @@ export class GameHud {
   private r: Record<string, HTMLElement> = {};
   private toastBox: HTMLDivElement;
 
-  constructor(parent: HTMLElement, private world: World) {
+  // parent=#fp-root（菜单层，只受 fit 缩放）；gameLayer=#fp-game（画面层，随双击缩放/平移）。
+  // 路网 SVG 必须与画布同步缩放 → 放进 gameLayer；其余 HUD 菜单留在 parent，放大时固定可见。
+  constructor(parent: HTMLElement, private gameLayer: HTMLElement, private world: World) {
     const root = E('div', 'position:absolute; inset:0; width:1280px; height:720px; z-index:10; pointer-events:none; font-family:"Noto Sans SC",sans-serif;');
     this.root = root as HTMLDivElement;
 
@@ -398,7 +400,7 @@ export class GameHud {
       dragging = -1;
       this.renderRoad();
     });
-    this.root.appendChild(svg);
+    this.gameLayer.appendChild(svg); // 路网 SVG 放进画面层 → 随双击缩放/平移与画布同步对齐（toolbar 仍留在菜单层固定）
 
     const tb = E('div', 'position:absolute; top:116px; left:709px; transform:translateX(-50%); z-index:41; display:none; gap:6px; pointer-events:auto;');
     const mk = (txt: string, bg: string, fn: () => void) => { const b = E('button', `border:none; border-radius:11px; background:${bg}; color:#fff; font-size:12px; font-weight:800; padding:9px 13px; cursor:pointer; box-shadow:0 3px 0 rgba(0,0,0,.3); white-space:nowrap;`) as HTMLButtonElement; b.textContent = txt; b.onclick = fn; return b; };
@@ -500,6 +502,7 @@ export class GameHud {
     this.signLabel('🏪', '商店', '#fff', 82, 33, () => this.toast('🏪 商店 · 买种 / 卖货'), '买卖');
     // 充电站标牌（电量 + 充电状态 + 电量条）
     const charge = E('div', 'position:absolute; left:91%; top:64%; transform:translate(-50%,0); display:flex; flex-direction:column; align-items:center; gap:3px; background:#fff; border:1.5px solid #cdb98c; border-radius:9px; padding:3px 9px; box-shadow:0 2px 5px rgba(0,0,0,.2); pointer-events:auto; white-space:nowrap;');
+    charge.classList.add('fp-world'); // 世界锚定：放大态隐藏，避免与缩放后的基站错位
     const crow = E('div', 'display:flex; align-items:center; gap:4px; font-size:11px; font-weight:800; color:#3a7d2c;');
     this.r.chargeIcon = E('span', 'font-size:12px;', { text: '🔋' });
     this.r.chargeLabel = E('span', '', { text: '基站 86%' });
@@ -512,6 +515,7 @@ export class GameHud {
   }
   private signLabel(icon: string, name: string, color: string, leftPct: number, topPct: number, onClick: () => void, tag?: string) {
     const wrap = E('div', `position:absolute; left:${leftPct}%; top:${topPct}%; transform:translate(-50%,0); cursor:pointer; display:flex; flex-direction:column; align-items:center; pointer-events:auto;`);
+    wrap.classList.add('fp-world'); // 世界锚定（仓库/商店牌）：放大态隐藏，避免与缩放后的房屋错位
     const sign = E('div', 'display:flex; align-items:center; gap:5px; background:linear-gradient(rgba(74,116,44,.86),rgba(50,86,30,.86)); border:2px solid rgba(176,134,63,.5); border-radius:11px; padding:4px 10px; box-shadow:0 5px 12px rgba(0,0,0,.28); white-space:nowrap;');
     sign.append(E('span', 'font-size:15px;', { text: icon }), E('span', `font-size:14px; color:${color};`, { text: name, cls: 'fp-logo' }));
     if (tag) sign.append(E('span', 'font-size:9px; font-weight:800; color:#eaffd6; background:rgba(126,201,67,.3); border-radius:6px; padding:1px 5px;', { text: tag }));

@@ -60,6 +60,10 @@
       .fp-logo {
         font-family: 'ZCOOL KuaiLe', sans-serif;
       }
+      /* 放大态：隐藏「世界锚定」的浮标（仓库/商店/基站牌）—— 菜单层不缩放，这些牌若留着会与放大后的画面错位 */
+      body.fp-zoomed .fp-world {
+        display: none !important;
+      }
       /* H5 原型动画关键帧（HUD 脉冲 / Toast 上浮 / 机器人摇摆，与 FieldPlay.dc.html 对齐） */
       @keyframes fpGlow { 0%, 100% { opacity: 0.62; } 50% { opacity: 1; } }
       @keyframes fpRise { from { transform: translate(-50%, 8px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }

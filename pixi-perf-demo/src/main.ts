@@ -18,6 +18,12 @@ import { dayState, type WeatherType } from './data/scenes';
 async function boot() {
   const root = document.getElementById('fp-root')!;
   const wrap = document.getElementById('fp-wrap')!;
+  // 缩放层：只有「画面」(Pixi 画布 + 路网 SVG)放进它、随双击缩放/平移；HUD 菜单留在 #fp-root 只受 fit 缩放
+  // → 放大时菜单仍固定可见可点（修复"放大后看不到菜单"）。
+  const gameLayer = document.createElement('div');
+  gameLayer.id = 'fp-game';
+  gameLayer.style.cssText = 'position:absolute; inset:0; width:1280px; height:720px; transform-origin:center center;';
+  root.appendChild(gameLayer);
 
   // —— Pixi 应用（1280×720 逻辑舞台；resolution 跟随 DPR，autoDensity 自适配）——
   const app = new Application();
@@ -31,13 +37,13 @@ async function boot() {
     powerPreference: 'high-performance',
     preference: 'webgl',
   });
-  root.appendChild(app.canvas);
+  gameLayer.appendChild(app.canvas);
   // 清晰度修复：fitBoard 用 CSS scale 把 1280 舞台放大铺满视口，位图画布被放大会糊。
   // 让画布按「实际显示像素」渲染：分辨率 = DPR × 适配缩放（带上限防 4K 过载），随窗口动态调整。
   const DPR = window.devicePixelRatio || 1;
   const RES_CAP = 2.5;
   let curRes = 0;
-  installFitBoard(root, (scale) => {
+  installFitBoard(root, gameLayer, (scale) => {
     const res = Math.max(1, Math.min(RES_CAP, +(DPR * scale).toFixed(2)));
     if (Math.abs(res - curRes) > 0.05) {
       curRes = res;
@@ -197,7 +203,7 @@ async function boot() {
   });
 
   // 全量 HUD（DOM 叠加，挂在 #fp-root 内随舞台缩放）
-  const gameHud = new GameHud(root, world);
+  const gameHud = new GameHud(root, gameLayer, world);
 
   // 默认进入「常规」档
   applyTier('normal');
