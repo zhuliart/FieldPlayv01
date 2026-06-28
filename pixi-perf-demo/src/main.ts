@@ -250,6 +250,22 @@ async function boot() {
 
   document.getElementById('fp-boot')?.remove();
 
+  // —— 毛玻璃补全背景：节流截取当前场景 → 设为整屏模糊背景（仅在有黑边时启用，零黑边时关闭省开销）——
+  const backdropEl = document.getElementById('fp-backdrop') as HTMLDivElement | null;
+  let backdropAcc = 9999; // 首帧即刷
+  const updateBackdrop = () => {
+    if (!backdropEl) return;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const barred = Math.abs(vw / vh - STAGE_W / STAGE_H) > 0.02; // 视口非 16:9 → 有黑边
+    if (!barred) { if (backdropEl.style.opacity !== '0') backdropEl.style.opacity = '0'; return; }
+    try {
+      // 低分辨率截取（背景重度模糊，画质无所谓）→ extract 渲染 + jpeg 编码都更省，弱化每 700ms 的开销
+      const c = app.renderer.extract.canvas({ target: app.stage, resolution: 0.35 }) as { toDataURL?: (t: string, q: number) => string };
+      const url = c.toDataURL?.('image/jpeg', 0.5);
+      if (url) { backdropEl.style.backgroundImage = `url(${url})`; backdropEl.style.opacity = '1'; }
+    } catch { /* extract 失败 → 保留 #fp-wrap 渐变兜底 */ }
+  };
+
   // —— 主循环 ——
   let sweepFrame = 0;
   app.ticker.add((ticker) => {
@@ -291,6 +307,10 @@ async function boot() {
     daynight.update(world.tod, world.toggles.dayTint, dtMS);
     particles.update(dtMS);
     gameHud.update(dtMS);
+
+    // 毛玻璃补全背景：约每 700ms 刷新一次（节流，避免每帧 extract 的开销）
+    backdropAcc += dtMS;
+    if (backdropAcc >= 700) { backdropAcc = 0; updateBackdrop(); }
 
     // 仪表读数
     stats.tick(ticker.deltaMS);

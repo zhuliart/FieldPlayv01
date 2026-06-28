@@ -42,17 +42,33 @@
           radial-gradient(135% 100% at 50% 42%, rgba(40, 58, 86, 0) 0%, rgba(8, 13, 21, 0.5) 76%, rgba(3, 6, 10, 0.85) 100%),
           linear-gradient(#172339 0%, #161f2d 46%, #1d1913 100%);
       }
+      /* 毛玻璃补全背景：场景截图铺满整屏(cover)+ 大幅模糊 + 轻压暗，放大 1.18× 避免模糊边缘露空。
+         清晰舞台(#fp-root)叠在其上 → 留白处是同一场景的模糊延续，边界自然渐隐、无生硬剪端。 */
+      #fp-backdrop {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        filter: blur(30px) saturate(1.08) brightness(0.66);
+        transform: scale(1.18);
+        opacity: 0;
+        transition: opacity 0.5s ease;
+        will-change: background-image;
+      }
       #fp-root {
         position: relative;
         flex: none;
         width: 1280px;
         height: 720px;
+        z-index: 1; /* 在毛玻璃背景之上 */
         transform-origin: center center;
         overflow: hidden;
         /* 天空渐变（设计令牌：舞台底） */
         background: linear-gradient(#5fb6ea 0%, #84c9ef 22%, #b6e0f4 40%, #d8eef6 50%);
-        /* 舞台外柔和投影 + 极淡描边 → 等比留白时舞台像被「画框」托起，而非浮在空洞上 */
-        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 22px 64px rgba(0, 0, 0, 0.55);
+        /* 舞台外柔和投影 + 极淡描边 → 与模糊背景之间留一道柔和过渡，不生硬 */
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 10px 50px rgba(0, 0, 0, 0.45);
       }
       #fp-root canvas {
         position: absolute;
@@ -96,6 +112,8 @@
   <body>
     <div id="fp-boot">铁娃子果蔬园 · 加载中…</div>
     <div id="fp-wrap">
+      <!-- 毛玻璃补全：把当前场景模糊放大铺满整屏当背景，清晰舞台叠在其上 → 黑边变成场景的模糊延续、自然渐隐、无硬切口（由 main.ts 节流截图刷新） -->
+      <div id="fp-backdrop"></div>
       <div id="fp-root"></div>
     </div>
     <!-- 竖屏提示（非阻断）：手机竖屏时由 stage.ts fitBoard 显示，旋转到横屏自动消失 -->
