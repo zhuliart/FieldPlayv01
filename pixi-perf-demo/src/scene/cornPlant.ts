@@ -71,7 +71,7 @@ export interface CornUpdate {
   dead: boolean;
 }
 
-interface LeafEntry { ai: number; frame: string; flipX: boolean; sJit: number; yJit: number; rJit: number; }
+interface LeafEntry { ai: number; frame: string; flipX: boolean; sJit: number; yJit: number; rJit: number; droopK: number; chaos: number; }
 
 export class CornPlantView extends Container {
   // 供 Field 阴影系统读取的「当前主导基底」几何（每帧 update 刷新）：贴图 + 缩放 + 锚点 y。
@@ -181,7 +181,10 @@ export class CornPlantView extends Container {
         flipX: pick.flip,
         sJit: 0.88 + plantHash(this.plotId, this.slotIdx, 60 + i) * 0.24, // 0.88..1.12
         yJit: 0.95 + plantHash(this.plotId, this.slotIdx, 80 + i) * 0.12, // 轻微非等比
-        rJit: (plantHash(this.plotId, this.slotIdx, 90 + i) - 0.5) * 0.28, // ±0.14rad ≈ ±8°
+        // —— 角度多样性（消除"同侧叶片一个角度"）——
+        rJit: (plantHash(this.plotId, this.slotIdx, 90 + i) - 0.5) * 0.70,  // 固定随机偏转 ±0.35rad ≈ ±20°
+        droopK: 0.45 + plantHash(this.plotId, this.slotIdx, 100 + i) * 1.30, // 每片独立下垂系数 0.45..1.75（不再同侧齐倒）
+        chaos: (plantHash(this.plotId, this.slotIdx, 110 + i) - 0.5) * 1.00,  // 散乱方向 ±0.5rad，随枯萎程度放大（枯叶各朝各方）
       });
     }
     return out;
@@ -210,8 +213,10 @@ export class CornPlantView extends Container {
       const norm = LEAF_REF_LEN / Math.max(tex.width, tex.height || 1);
       const ls = aScale * LEAF_SCALE * e.sJit * norm * leafTypeScale(e.frame); // 再按叶型缩放：枯/黄/卷曲比健康叶小
       lf.scale.set(sgn * ls, ls * e.yJit);
+      // 角度多样性：基础出叶角 + 每片固定随机偏转 + 每片独立下垂(系数不同→同侧不再齐倒) + 枯萎散乱(越枯越各朝各方)
       const droopSign = ap.side === 'left' ? -1 : ap.side === 'right' ? 1 : 0;
-      lf.rotation = ap.rotation + e.rJit + droop * droopSign;
+      const chaos = e.chaos * (0.25 + 0.75 * p.wither); // 健康期已有小散乱、枯萎期放大
+      lf.rotation = ap.rotation + e.rJit + droop * droopSign * e.droopK + chaos;
       lf.tint = p.partTint;
       lf.alpha = 1;
       lf.visible = true;
