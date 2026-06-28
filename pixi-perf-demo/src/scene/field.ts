@@ -648,33 +648,45 @@ function applyShadow(sh: Sprite, tex: Texture, anchorX: number, anchorY: number,
 function setShadow(sh: Sprite, src: Sprite, hPx: number, renderW: number, alpha: number) {
   applyShadow(sh, src.texture, src.anchor.x, src.anchor.y, src.scale.x, src.scale.y, src.x, src.y, hPx, renderW, alpha);
 }
-// 渲染一株野草：连续平滑爬升生长(幼苗极小→成熟) + 阶段交叉淡入(sp 当前阶段、sp2 下一阶段，类作物) +
-// 枯萎转枯褐(非黑)/缩/倒 + 接地阴影。两株贴图按 relH 归一，换阶段只换形态不跳大小。
+function smooth01(t: number): number { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+// 渲染一株野草：连续平滑爬升生长 + 强化双 Sprite 过渡 + 枯萎转枯褐/缩/倒 + 接地阴影。两株贴图按 relH 归一(换阶段不跳大小)。
+// 两类过渡都平滑(消除 yellowdock/plantain 的"突然变样")：
+//  ① 生长阶段间：base=当前帧(不透明)、over=下一帧，alpha 用 smoothstep 在阶段 30%→100% 渐显(加宽更柔，base 不透明→无重影)。
+//  ② 成熟→枯萎：原为瞬间换帧(最突兀)。改 base=成熟帧、over=枯萎帧，随 wither 0→0.55 做"真交叉溶解"(base 同步淡出)→ 平滑枯萎。
 function drawWeed(sp: Sprite, sp2: Sprite, sh: Sprite, kind: WeedKind, targetH: number, life: number, phase: number, wither: number, lodge: number, restAng: number, colorVar: number, relight: number, shadowAlpha: number, fade: number): void {
   const stg = kind.stages, N = stg.length, growN = kind.hasWithered ? N - 1 : N;
   const Lc = Math.min(1, life);
-  const withered = phase >= 2;
-  const fStage = Lc * growN;
-  const stage = withered ? N - 1 : Math.min(growN - 1, Math.floor(fStage)); // 枯萎显末帧；生长只到成熟
-  const frac = withered ? 0 : Math.min(1, fStage - stage);                   // 阶段内进度
-  const next = Math.min(growN - 1, stage + 1);
-  // 幼苗极小(0.02，原 0.18 的 ~10%)→平滑爬升到成熟(1.0)，pow 让早期增速更柔、不再"突然变大"
+  const withering = phase >= 2;
+  // 幼苗极小(0.02)→平滑爬升到成熟(1.0)
   const plantH = targetH * (0.02 + 0.98 * Math.pow(Lc, 1.15)) * (1 - wither * 0.22);
   if (plantH < 0.6 || fade <= 0.01) { sp.visible = false; sp2.visible = false; sh.visible = false; return; }
   const rot = ((restAng + lodge) * Math.PI) / 180;
   const dark = wither > 0 ? lerpColor(0xffffff, 0x7a5f38, Math.min(1, wither) * 0.85) : 0xffffff; // 枯萎转枯褐(枯草色，非近黑)
   const tint = multiplyColor(multiplyColor(relight, colorVar), dark);
-  // 当前阶段
-  if (sp.texture !== stg[stage]) sp.texture = stg[stage];
-  sp.scale.set(plantH / (stageRel(stage, N) * (stg[stage].height || 1))); // ÷relH → 换阶段不跳大小
-  sp.rotation = rot; sp.tint = tint; sp.alpha = fade; sp.visible = true;
-  // 下一阶段交叉淡入（仅生长态、每阶段最后 30%）→ 形态平滑过渡、无突变
-  const bAlpha = (!withered && stage < growN - 1) ? Math.max(0, (frac - 0.7) / 0.3) : 0;
-  if (bAlpha > 0.003) {
-    if (sp2.texture !== stg[next]) sp2.texture = stg[next];
+
+  let baseStage: number, overStage: number, overAlpha: number, dissolve: boolean;
+  if (withering) { // 成熟帧 → 枯萎帧 交叉溶解（hasWithered 才有独立枯萎帧；否则仅 tint/倒伏表现枯萎）
+    baseStage = growN - 1; overStage = N - 1;
+    overAlpha = kind.hasWithered ? smooth01(wither / 0.55) : 0;
+    dissolve = true; // base 同步淡出 → 真溶解（成熟绿叶溶为枯褐残株）
+  } else {          // 生长阶段间交叉淡入
+    const fStage = Lc * growN;
+    baseStage = Math.min(growN - 1, Math.floor(fStage));
+    const frac = Math.min(1, fStage - baseStage);
+    overStage = Math.min(growN - 1, baseStage + 1);
+    overAlpha = baseStage < growN - 1 ? smooth01((frac - 0.3) / 0.7) : 0; // 加宽到 30%→100% + smoothstep
+    dissolve = false; // base 保持不透明 → 相邻生长帧叠加、无重影
+  }
+
+  if (sp.texture !== stg[baseStage]) sp.texture = stg[baseStage];
+  sp.scale.set(plantH / (stageRel(baseStage, N) * (stg[baseStage].height || 1))); // ÷relH → 换阶段不跳大小
+  sp.rotation = rot; sp.tint = tint; sp.visible = true;
+  sp.alpha = dissolve ? fade * (1 - overAlpha) : fade; // 溶解态 base 淡出；生长态 base 不透明
+  if (overAlpha > 0.003 && overStage !== baseStage) {
+    if (sp2.texture !== stg[overStage]) sp2.texture = stg[overStage];
     sp2.anchor.copyFrom(sp.anchor); sp2.position.copyFrom(sp.position); sp2.zIndex = sp.zIndex;
-    sp2.scale.set(plantH / (stageRel(next, N) * (stg[next].height || 1)));
-    sp2.rotation = rot; sp2.tint = tint; sp2.alpha = fade * bAlpha; sp2.visible = true;
+    sp2.scale.set(plantH / (stageRel(overStage, N) * (stg[overStage].height || 1)));
+    sp2.rotation = rot; sp2.tint = tint; sp2.alpha = fade * overAlpha; sp2.visible = true;
   } else sp2.visible = false;
   setShadow(sh, sp, plantH, sp.texture.width * sp.scale.x, shadowAlpha * (1 - wither * 0.55));
 }
