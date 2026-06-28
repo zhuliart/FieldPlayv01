@@ -42,33 +42,27 @@
           radial-gradient(135% 100% at 50% 42%, rgba(40, 58, 86, 0) 0%, rgba(8, 13, 21, 0.5) 76%, rgba(3, 6, 10, 0.85) 100%),
           linear-gradient(#172339 0%, #161f2d 46%, #1d1913 100%);
       }
-      /* 毛玻璃补全背景：场景截图铺满整屏(cover)+ 大幅模糊 + 轻压暗，放大 1.18× 避免模糊边缘露空。
-         清晰舞台(#fp-root)叠在其上 → 留白处是同一场景的模糊延续，边界自然渐隐、无生硬剪端。 */
+      /* 黑边「边缘采样补全」：main.ts 取当前场景的 顶/中/底 边缘色铺成竖向渐变铺满整屏。
+         舞台(#fp-root)叠其上居中 → 上黑边=场景顶边色、下黑边=场景底边色 → 与画面边缘同色、天衣无缝、
+         无模糊接缝、无白边，随昼夜自动变色。比模糊图更干净（尤其细黑边/全屏）。 */
       #fp-backdrop {
         position: absolute;
         inset: 0;
         z-index: 0;
-        background-size: cover;
-        background-position: center;
-        background-repeat: no-repeat;
-        filter: blur(30px) saturate(1.08) brightness(0.66);
-        transform: scale(1.18);
         opacity: 0;
-        transition: opacity 0.5s ease;
-        will-change: background-image;
+        transition: opacity 0.5s ease, background 0.6s linear;
       }
       #fp-root {
         position: relative;
         flex: none;
         width: 1280px;
         height: 720px;
-        z-index: 1; /* 在毛玻璃背景之上 */
+        z-index: 1; /* 在补全背景之上 */
         transform-origin: center center;
         overflow: hidden;
-        /* 天空渐变（设计令牌：舞台底） */
+        /* 天空渐变（设计令牌：舞台底；画布满覆盖、平时不可见） */
         background: linear-gradient(#5fb6ea 0%, #84c9ef 22%, #b6e0f4 40%, #d8eef6 50%);
-        /* 舞台外柔和投影 + 极淡描边 → 与模糊背景之间留一道柔和过渡，不生硬 */
-        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 10px 50px rgba(0, 0, 0, 0.45);
+        /* 无描边、无投影 → 画面与采样背景同色相接，彻底消除生硬边线/白边 */
       }
       #fp-root canvas {
         position: absolute;
