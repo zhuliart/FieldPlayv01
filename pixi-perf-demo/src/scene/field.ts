@@ -30,7 +30,7 @@ interface PlantRecBase {
   r4: number;
   curLodge: number; // 当前倒伏角（平滑逼近目标）
   colorVar: number; // 每株自然色彩随机（乘法 tint）：有的更红/橙、有的偏黄绿
-  shadow: Sprite;   // 接地软阴影
+  shadow: ShadowRec; // 双层接地阴影（contact 接地 + cast 投射）
 }
 interface StandardPlantRec extends PlantRecBase {
   kind: 'standard';
@@ -84,16 +84,15 @@ export class Field {
   private cropLayer = new Container();
   private hitLayer = new Container();
   private shadowLayer = new Container(); // 投影层（作物层之下、背景之上）：野草/作物的接地软阴影
-  private shadowTex: Texture;
   private recs: PlantRec[] = [];
   private kinds: WeedKind[] = [];
   private fieldKinds: number[] = []; // 可长在田里的类型索引
   private wildKinds: number[] = [];  // 可长在野地的类型索引
   private roadKinds: number[] = [];  // 可长在路上的类型索引
   // 田内杂草：随 weedProg 出现，出现后走个体生命周期(生长→成熟→枯萎转黑倒伏)，枯后保留为残株待机器人清枯(rule4)
-  private weedRecs: { sprite: Sprite; sprite2: Sprite; plotId: number; order: number; appear: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: Sprite; colorVar: number; restAng: number; growMul: number; life: number; phase: number; hold: number; wither: number; lodge: number }[] = [];
+  private weedRecs: { sprite: Sprite; sprite2: Sprite; plotId: number; order: number; appear: number; kind: WeedKind; targetH: number; cur: number; malign: boolean; shadow: ShadowRec; colorVar: number; restAng: number; growMul: number; life: number; phase: number; hold: number; wither: number; lodge: number }[] = [];
   // 野地杂草：田块外按习性长草，有完整生命周期（生长→成熟→枯萎→原地/异地重生）+ 多样性随机
-  private wildRecs: { sprite: Sprite; sprite2: Sprite; shadow: Sprite; kind: WeedKind; onPath: boolean; bx: number; by: number; sizeJit: number; colorVar: number; restAng: number; growMul: number; cur: number; life: number; phase: number; hold: number; wither: number; lodge: number; pressed: boolean }[] = [];
+  private wildRecs: { sprite: Sprite; sprite2: Sprite; shadow: ShadowRec; kind: WeedKind; onPath: boolean; bx: number; by: number; sizeJit: number; colorVar: number; restAng: number; growMul: number; cur: number; life: number; phase: number; hold: number; wither: number; lodge: number; pressed: boolean }[] = [];
   private roadNodes: { left: number; top: number }[] = []; // 供野草异地重生时判定 onPath
   private roadEdges: [number, number][] = [];
   private lastShadowAlpha = 0.3; // 当前接地阴影强度（随天气/昼夜），供全量光影冠层投影同步浓度
@@ -113,7 +112,8 @@ export class Field {
     if (this.fieldKinds.length === 0) this.fieldKinds = kinds.map((_, i) => i); // 兜底
     if (this.wildKinds.length === 0) this.wildKinds = kinds.map((_, i) => i);
     if (this.roadKinds.length === 0) this.roadKinds = this.wildKinds.slice();
-    this.shadowTex = SHADOW_BLOB = makeShadowTexture(); // 同时存模块级 SHADOW_BLOB（剪影 LOD 兜底 / 'blob' 回退用）
+    SHADOW_BLOB = makeShadowTexture();     // 模块级彗星团（投射层 LOD/兜底）
+    SH_CONTACT_TEX = makeContactTexture(); // 模块级接地层软暗盘（程序生成、永不失败）
     this.cropLayer.sortableChildren = true; // 作物 + 杂草 + 机器人机身 共用此层，按 y 纵深统一排序
     this.view.addChild(this.shadowLayer); // 投影在最底（背景之上、作物之下）
     this.view.addChild(this.cropLayer);
@@ -161,12 +161,13 @@ export class Field {
     }
   }
 
-  private mkShadow(): Sprite {
-    const s = new Sprite(this.shadowTex);
-    s.anchor.set(SH_ANCHOR_X, 0.5); // 锚点=贴图近端浓团(接地点) → 旋转/缩放时根部不动、只有尾巴摆向地面
-    s.visible = false;
-    this.shadowLayer.addChild(s);
-    return s;
+  private mkShadow(): ShadowRec {
+    const cast = new Sprite(SHADOW_BLOB);  // 投射层：初始彗星团，setShadow 里换成剪影/或保持
+    cast.anchor.set(SH_ANCHOR_X, 0.5); cast.eventMode = 'none'; cast.visible = false;
+    const contact = new Sprite(SH_CONTACT_TEX); // 接地层：居中盖根的软暗盘
+    contact.anchor.set(0.5, 0.5); contact.eventMode = 'none'; contact.visible = false;
+    this.shadowLayer.addChild(cast, contact); // cast 在下、contact 在上（根部更深）
+    return { contact, cast };
   }
 
   /** 把"演员"(机器人机身)放进作物层，按 zIndex=y 与作物一起纵深排序 → 走到更靠前高作物后会被遮挡（真实 2.5D）。 */
@@ -357,7 +358,8 @@ export class Field {
       if (rec.plotId === plotId) { // 销毁旧记录的全部显示对象（玉米 Container / 标准双 Sprite）+ 阴影，不留失效引用
         if (rec.kind === 'corn') { this.cropLayer.removeChild(rec.view); rec.view.destroy(); }
         else { this.cropLayer.removeChild(rec.sprite); rec.sprite.destroy(); this.cropLayer.removeChild(rec.sprite2); rec.sprite2.destroy(); }
-        this.shadowLayer.removeChild(rec.shadow); rec.shadow.destroy();
+        this.shadowLayer.removeChild(rec.shadow.contact); rec.shadow.contact.destroy();
+        this.shadowLayer.removeChild(rec.shadow.cast); rec.shadow.cast.destroy();
       } else keep.push(rec);
     }
     this.recs = keep;
@@ -388,7 +390,7 @@ export class Field {
     for (const rec of this.recs) {
       const plot = world.plots[rec.plotId];
       const sl = plot?.slots[rec.slotIdx];
-      if (!sl) { rec.shadow.visible = false; if (rec.kind === 'corn') rec.view.visible = false; else { rec.sprite.visible = false; rec.sprite2.visible = false; } continue; }
+      if (!sl) { hideShadow(rec.shadow); if (rec.kind === 'corn') rec.view.visible = false; else { rec.sprite.visible = false; rec.sprite2.visible = false; } continue; }
       // 收割后空置 / 翻耕 / 出苗期：隐藏作物，露出裸土（收割→翻耕→播种 轮作过程可见）
       const bare = sl.fallowMS > 0 || sl.phase !== 'grow';
       const growthCont = Math.max(0, Math.min(4, sl.growth / 100));
@@ -399,7 +401,7 @@ export class Field {
 
       // —— 玉米：预制图集视图（5 阶段完整图 + 衰老叶/主干模块）——
       if (rec.kind === 'corn') {
-        if (bare) { rec.view.visible = false; rec.shadow.visible = false; continue; }
+        if (bare) { rec.view.visible = false; hideShadow(rec.shadow); continue; }
         rec.view.visible = true;
         const sizeBase = PLANT_SIZE.corn ?? PLANT_SIZE_DEFAULT;
         const wither = cornWither(sl, wx, stage); // 由 Slot 真实状态统一计算（不脱节）
@@ -426,7 +428,7 @@ export class Field {
       // —— 标准作物（番茄/生菜/辣椒/小麦）：双 Sprite 交叉淡入 ——
       const a = rec.sprite, b = rec.sprite2;
       a.visible = !bare; b.visible = !bare;
-      if (bare) { rec.shadow.visible = false; continue; }
+      if (bare) { hideShadow(rec.shadow); continue; }
 
       const sizeBase = PLANT_SIZE[sl.crop] ?? PLANT_SIZE_DEFAULT;
       const hPct = rec.pdepPct * (sizeBase + 0.18 * rec.depth) * rec.sizeJit * gScale;
@@ -477,11 +479,11 @@ export class Field {
     for (const wr of this.weedRecs) {
       const plot = world.plots[wr.plotId];
       const sp = wr.sprite;
-      if (!plot) { sp.visible = false; wr.sprite2.visible = false; wr.shadow.visible = false; continue; }
+      if (!plot) { sp.visible = false; wr.sprite2.visible = false; hideShadow(wr.shadow); continue; }
       const wp = wr.malign ? plot.malign : plot.weedProg; // 恶性株按 malign 出现，普通株按 weedProg
       const appearAt = wr.appear; // 每株自带出现阈值（普通密集递进、恶性低阈值且仅 2 株）
       if (wp <= appearAt) { // 未冒出 / 已被除草翻耕 → 隐藏并复位生命周期
-        sp.visible = false; wr.sprite2.visible = false; wr.shadow.visible = false;
+        sp.visible = false; wr.sprite2.visible = false; hideShadow(wr.shadow);
         wr.life = 0; wr.phase = 0; wr.wither = 0; wr.lodge = 0; wr.cur = -1; continue;
       }
       const kind = wr.kind;
@@ -580,16 +582,38 @@ const SH_LEN_H = 0.5;      // 株高→附加长度(高株投影更长)
 // —— 剪影阴影（P0：复用植株自身贴图作"植株剪影"，零新增美术/纹理内存）——
 // 把植株当前阶段贴图乘平整深色→正面色/细节消失只剩枝叶轮廓；竖向翻转(scale.y 取负)使枝叶从根部投向右下地面、
 // 再压扁(FLATTEN)铺展、沿固定光向切变(SKEW)躺地。比通用水滴团多了"枝叶形状"，且根部直接拷植株锚点 → 不悬浮。
-const SH_MODE: 'silhouette' | 'blob' = 'silhouette'; // 总开关；'blob' 一键回退到上面的彗星软团(行为与改动前完全一致)
-const SH_SIL_MIN_PX = 22;     // 株高(px)阈值：低于此用彗星团(远/小株，更便宜) → 兼作 LOD；高于此用剪影
-const SH_SIL_TINT = 0x1c241e; // 平整深色(偏环境冷绿、非纯黑)：烤进阴影贴图、抹掉正面色/细节
-const SH_SIL_FLATTEN = 0.50;  // 纵向压扁系数：控制阴影沿地面铺展的长度(越小越短越贴地)
-const SH_SIL_WIDEN = 1.12;    // 横向略加宽：避免阴影细成条
-const SH_SIL_SKEW = 0.45;     // 切变量(rad)：阴影"躺向"地面的倾斜(略竖、填实)；与 SH_ANGLE 同向(右下)、不随昼夜转
-const SH_SIL_ALPHA_K = 0.85;  // 阴影相对 shadowAlpha 的折扣(面积大、略降浓度)
-const SH_SIL_DS = 0.5;        // 烤制阴影贴图的降采样系数(更便宜，且放大时天然更软)
-// 共享彗星团贴图(模块级)：剪影 LOD 兜底 + SH_MODE='blob' 回退用；在 Field 构造里由 makeShadowTexture() 赋值。
+// —— 双层接地阴影（v2）：接地层(contact/AO，钉住植株不悬浮) + 投射层(cast，朝光向拉出、根深尖淡) ——
+const SH_MODE: 'silhouette' | 'blob' = 'silhouette'; // 投射层形态；'blob' = 投射层也用彗星团(不烤剪影)
+const SH_TINT = 0x1c241e;     // 平整深色(偏环境冷绿、非纯黑)：两层共用
+const SH_SIL_MIN_PX = 22;     // 株高(px)阈值：低于此只画接地层、跳过投射层 → 省+干净，兼作 LOD
+const SH_SIL_DS = 0.5;        // 烤制投射剪影的降采样(便宜+放大更软)
+// 接地层(根部 AO 浓团)
+const SH_CONTACT_W = 0.62;    // 接地盘直径 / 冠幅(>茎基、包住四周)
+const SH_CONTACT_SQUASH = 0.55; // 竖向压扁成椭圆(俯视地面)
+const SH_CONTACT_ALPHA = 1.0; // 接地层最深(× shadowAlpha)
+// 投射层(冠层剪影/彗星团)
+const SH_CAST_FLATTEN = 0.50; // 纵向压扁(控制投射长度)
+const SH_CAST_WIDEN = 1.05;   // 横向略加宽(防细条)
+const SH_CAST_SKEW = 0.40;    // 切变(rad)：躺向地面、与 SH_ANGLE 同向(右下)、不随昼夜转
+const SH_CAST_ALPHA = 0.55;   // 投射层比接地层浅
+// 共享彗星团贴图 + 接地层贴图(模块级，程序生成、永不失败)；在 Field 构造里赋值。
 let SHADOW_BLOB: Texture;
+let SH_CONTACT_TEX: Texture;
+// 接地层软径向盘：中心最深→边缘透明。用「白底 + alpha 渐变」→ 这样 setShadow 的 tint=SH_TINT 才能上色
+// (纯黑底被 tint 乘仍是黑 → 失去"非纯黑"环境冷绿调)。竖向压扁在 setShadow 里用 scale 控制。
+function makeContactTexture(): Texture {
+  const S = 96;
+  const cv = document.createElement('canvas'); cv.width = S; cv.height = S;
+  const ctx = cv.getContext('2d')!;
+  const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0, 'rgba(255,255,255,0.95)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+  return Texture.from(cv);
+}
+type ShadowRec = { contact: Sprite; cast: Sprite };
+function hideShadow(sh: ShadowRec) { sh.contact.visible = false; sh.cast.visible = false; }
 
 // —— 预烤「膨胀填实 + 模糊」阴影贴图，按源贴图(Texture 引用 = 每作物每阶段唯一)缓存，全场共享、只烤一次 ——
 // 上一版直接拿植株 alpha 当剪影：细叶(玉米/小麦)压扁切变后散成一把斜丝(叶间空隙原样透出)。
@@ -613,22 +637,28 @@ function getSilShadow(srcTex: Texture): Texture | null {
     const cv = document.createElement('canvas'); cv.width = sw; cv.height = shh;
     const ctx = cv.getContext('2d'); if (!ctx) return null;
     const bw = baseCv.width, bh = baseCv.height;
-    // (1) 膨胀填实：源帧在一圈小偏移上反复叠绘 → 细叶胀到一起、闭合叶间空隙
-    const R = Math.max(2, Math.round(sw * 0.06)), STEPS = 12;
-    ctx.globalAlpha = 0.6;
+    // (1) 膨胀填实：源帧在一圈小偏移上叠绘 → 闭合叶间空隙(够闭合即可、别糊：R/STEPS/alpha 都收小)
+    const R = Math.max(2, Math.round(sw * 0.025)), STEPS = 8;
+    ctx.globalAlpha = 0.5;
     for (let i = 0; i < STEPS; i++) { const a = (i / STEPS) * Math.PI * 2; ctx.drawImage(baseCv, 0, 0, bw, bh, Math.cos(a) * R, Math.sin(a) * R, sw, shh); }
     ctx.globalAlpha = 1;
     ctx.drawImage(baseCv, 0, 0, bw, bh, 0, 0, sw, shh); // 中心补一张
-    // (2) 模糊软边（Safari 老版 canvas 无 ctx.filter → 跳过此步，只膨胀+染色，边略硬但不散丝）
+    // (2) 模糊软边（收小 blur 留住外形；Safari 老版无 ctx.filter → 跳过，只膨胀+染色，边略硬但不散丝）
     if ('filter' in ctx) {
-      const blurPx = Math.max(2, Math.round(sw * 0.09));
+      const blurPx = Math.max(1, Math.round(sw * 0.035));
       const t2 = document.createElement('canvas'); t2.width = sw; t2.height = shh;
       const tctx = t2.getContext('2d');
       if (tctx) { tctx.drawImage(cv, 0, 0); ctx.clearRect(0, 0, sw, shh); ctx.filter = `blur(${blurPx}px)`; ctx.drawImage(t2, 0, 0); ctx.filter = 'none'; }
     }
-    // (3) 染平深色：source-in 把已成形的 alpha 团整体替换为单色（抹掉正面颜色/细节）
+    // (3) 根深尖淡：沿 底(根,y=shh)→顶(尖,y=0) 乘一道 alpha 渐变(根 1.0、尖 0.3) → 投射影根深尖淡、不均匀washout
+    const grad = ctx.createLinearGradient(0, shh, 0, 0);
+    grad.addColorStop(0, 'rgba(0,0,0,1)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.3)');
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, sw, shh);
+    // (4) 染平深色：source-in 把成形 alpha 团整体替换为单色（抹掉正面颜色/细节）
     ctx.globalCompositeOperation = 'source-in';
-    ctx.fillStyle = '#' + SH_SIL_TINT.toString(16).padStart(6, '0');
+    ctx.fillStyle = '#' + SH_TINT.toString(16).padStart(6, '0');
     ctx.fillRect(0, 0, sw, shh);
     ctx.globalCompositeOperation = 'source-over';
     const tex = Texture.from(cv);
@@ -658,43 +688,52 @@ function makeShadowTexture(): Texture {
   ctx.fillStyle = g2; ctx.fillRect(0, 0, W, H);
   return Texture.from(cv);
 }
-// 把阴影钉在植株根 (src.x,src.y)。两种形态自动择一：
-//  · 剪影(默认，近/大株)：复用植株当前贴图，乘平整深色→只剩枝叶轮廓；竖向翻转(负 scale.y)使枝叶从根部投向右下地面、
-//    再压扁(FLATTEN)铺展、沿固定光向切变(SKEW)躺地；锚点直接拷植株锚点 → 根部与植株严丝合缝(消除悬浮)。
-//  · 彗星团(远/小株 LOD 兜底，或 SH_MODE='blob' 回退)：原接地软团，锚点=接地浓团、旋到右下、长随株高宽随冠幅 renderW。
-// 方向固定(右下，匹配背景烘焙树影)，绝不随昼夜旋转；浓度走传入 alpha(源自 shadowAlpha 天气×昼夜模型)。
-// 显式参数版：贴图/锚点/缩放/世界坐标都直接传入 → 既支持精灵(标准作物/野草)，也支持玉米
-// (主体在 Container 内、局部坐标为 0,0，必须用 Container 的根部世界坐标 worldX/worldY，否则阴影会跑到舞台 (0,0))。
-function applyShadow(sh: Sprite, tex: Texture, anchorX: number, anchorY: number, scaleX: number, scaleY: number, worldX: number, worldY: number, hPx: number, renderW: number, alpha: number) {
-  sh.visible = true;
-  // 烤好的「填实软影」贴图（按源贴图缓存、只烤一次）；取不到(渲染器未就绪/烤制失败/小远株) → 走彗星团兜底
-  const silTex = (SH_MODE === 'silhouette' && hPx >= SH_SIL_MIN_PX) ? getSilShadow(tex) : null;
+// 双层阴影：把 contact(接地 AO) + cast(投射) 两个 Sprite 摆到植株根 (worldX,worldY)。
+//  · 接地层：程序生成软暗盘，居中盖茎基、压扁成椭圆、不偏移不倾斜、最深 → 把植株「钉」在地上(不悬浮)。永不失败。
+//  · 投射层：近/大株用预烤填实剪影(竖向翻转投向右下、WIDEN/FLATTEN/SKEW 控形、根深尖淡)；烤制失败→彗星团兜底；
+//    小/远株(<MIN_PX)直接跳过投射层、只留接地层(省+干净，兼作 LOD)。方向固定右下、不随昼夜转，浓度走 alpha。
+// 显式参数版 → 既支持精灵(标准作物/野草)，也支持玉米(主体在 Container 内、用根部世界坐标 worldX/worldY)。
+function applyShadow(sh: ShadowRec, tex: Texture, anchorX: number, anchorY: number, scaleX: number, scaleY: number, worldX: number, worldY: number, hPx: number, renderW: number, alpha: number) {
+  const footW = Math.max(6, Math.abs(renderW));
+  // —— 接地层 ——（居中盖根、压扁、最深；始终绘制）
+  const c = sh.contact;
+  c.visible = true;
+  if (c.texture !== SH_CONTACT_TEX) c.texture = SH_CONTACT_TEX;
+  c.position.set(worldX, worldY);
+  c.rotation = 0; c.skew.x = 0;
+  c.scale.set((footW * SH_CONTACT_W) / 96, (footW * SH_CONTACT_W * SH_CONTACT_SQUASH) / 96);
+  c.tint = SH_TINT;
+  c.alpha = alpha * SH_CONTACT_ALPHA;
+
+  // —— 投射层 ——（大株才画；剪影优先、失败→彗星团；小株 null → 隐藏）
+  const ca = sh.cast;
+  if (hPx < SH_SIL_MIN_PX) { ca.visible = false; return; }
+  const silTex = SH_MODE === 'silhouette' ? getSilShadow(tex) : null;
+  ca.visible = true;
+  ca.position.set(worldX, worldY); // 根端与接地层同点 → 不悬浮
   if (silTex) {
-    if (sh.texture !== silTex) sh.texture = silTex;
-    sh.anchor.set(anchorX, anchorY); // 锚点=植株锚点 → 根部严格重合
-    sh.position.set(worldX, worldY);
-    sh.rotation = 0;                // 不叠加植株休止角/倒伏旋转（否则影子会"站起来"）
-    sh.skew.x = SH_SIL_SKEW;        // 固定光向切变（同值自动去重）
-    // 竖向翻转(负 scale.y)→ 枝叶投向右下地面；÷DS 抵消烤图降采样；WIDEN 加宽防细条；FLATTEN 控制铺展长度
-    sh.scale.set((scaleX / SH_SIL_DS) * SH_SIL_WIDEN, -(Math.abs(scaleY) / SH_SIL_DS) * SH_SIL_FLATTEN);
-    sh.tint = 0xffffff;             // 颜色已烤进贴图，tint 设白不二次染
-    sh.alpha = alpha * SH_SIL_ALPHA_K;
-  } else {
-    if (sh.texture !== SHADOW_BLOB) sh.texture = SHADOW_BLOB;
-    sh.anchor.set(SH_ANCHOR_X, 0.5);
-    sh.skew.x = 0;
-    sh.tint = 0xffffff;            // 彗星团贴图本为纯黑，复位 tint 以防从剪影态切回时残留染色
-    const foot = Math.max(4, Math.abs(renderW) * SH_FOOT);
-    const len = Math.min(hPx * 1.25, foot * SH_LEN_BASE + hPx * SH_LEN_H); // 高株投影更长，封顶不过界
-    const wid = Math.max(foot * SH_WID, len * 0.34);                       // 宽度下限：矮株也不至于细成线
-    sh.rotation = SH_ANGLE;
-    sh.position.set(worldX, worldY + hPx * 0.01); // 贴根（浓团即接地点，几乎不偏移 → 牢牢咬住地面）
-    sh.scale.set(len / SH_TEX_W, wid / SH_TEX_H);
-    sh.alpha = alpha;
+    if (ca.texture !== silTex) ca.texture = silTex;
+    ca.anchor.set(anchorX, anchorY); // 植株锚点 → 根重合
+    ca.rotation = 0; ca.skew.x = SH_CAST_SKEW;
+    // 负 scale.y 翻转 → 投向右下地面；÷DS 抵消烤图降采样；WIDEN 防细条、FLATTEN 控长
+    ca.scale.set((scaleX / SH_SIL_DS) * SH_CAST_WIDEN, -(Math.abs(scaleY) / SH_SIL_DS) * SH_CAST_FLATTEN);
+    ca.tint = 0xffffff;              // 色(含根深尖淡)已烤进贴图
+    ca.alpha = alpha * SH_CAST_ALPHA;
+  } else { // 彗星团兜底（接地层照常 → 即便退化也不悬浮）
+    if (ca.texture !== SHADOW_BLOB) ca.texture = SHADOW_BLOB;
+    ca.anchor.set(SH_ANCHOR_X, 0.5);
+    ca.skew.x = 0;
+    ca.tint = SH_TINT;
+    const foot = Math.max(4, footW * SH_FOOT);
+    const len = Math.min(hPx * 1.25, foot * SH_LEN_BASE + hPx * SH_LEN_H);
+    const wid = Math.max(foot * SH_WID, len * 0.34);
+    ca.rotation = SH_ANGLE;
+    ca.scale.set(len / SH_TEX_W, wid / SH_TEX_H);
+    ca.alpha = alpha * SH_CAST_ALPHA;
   }
 }
 // 精灵版（标准作物/野草）：从精灵自身世界坐标 + 贴图/锚点/缩放取参，转交 applyShadow。
-function setShadow(sh: Sprite, src: Sprite, hPx: number, renderW: number, alpha: number) {
+function setShadow(sh: ShadowRec, src: Sprite, hPx: number, renderW: number, alpha: number) {
   applyShadow(sh, src.texture, src.anchor.x, src.anchor.y, src.scale.x, src.scale.y, src.x, src.y, hPx, renderW, alpha);
 }
 function smooth01(t: number): number { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
@@ -702,13 +741,13 @@ function smooth01(t: number): number { t = t < 0 ? 0 : t > 1 ? 1 : t; return t *
 // 两类过渡都平滑(消除 yellowdock/plantain 的"突然变样")：
 //  ① 生长阶段间：base=当前帧(不透明)、over=下一帧，alpha 用 smoothstep 在阶段 30%→100% 渐显(加宽更柔，base 不透明→无重影)。
 //  ② 成熟→枯萎：原为瞬间换帧(最突兀)。改 base=成熟帧、over=枯萎帧，随 wither 0→0.55 做"真交叉溶解"(base 同步淡出)→ 平滑枯萎。
-function drawWeed(sp: Sprite, sp2: Sprite, sh: Sprite, kind: WeedKind, targetH: number, life: number, phase: number, wither: number, lodge: number, restAng: number, colorVar: number, relight: number, shadowAlpha: number, fade: number): void {
+function drawWeed(sp: Sprite, sp2: Sprite, sh: ShadowRec, kind: WeedKind, targetH: number, life: number, phase: number, wither: number, lodge: number, restAng: number, colorVar: number, relight: number, shadowAlpha: number, fade: number): void {
   const stg = kind.stages, N = stg.length, growN = kind.hasWithered ? N - 1 : N;
   const Lc = Math.min(1, life);
   const withering = phase >= 2;
   // 幼苗极小(0.02)→平滑爬升到成熟(1.0)
   const plantH = targetH * (0.02 + 0.98 * Math.pow(Lc, 1.15)) * (1 - wither * 0.22);
-  if (plantH < 0.6 || fade <= 0.01) { sp.visible = false; sp2.visible = false; sh.visible = false; return; }
+  if (plantH < 0.6 || fade <= 0.01) { sp.visible = false; sp2.visible = false; hideShadow(sh); return; }
   const rot = ((restAng + lodge) * Math.PI) / 180;
   const dark = wither > 0 ? lerpColor(0xffffff, 0x7a5f38, Math.min(1, wither) * 0.85) : 0xffffff; // 枯萎转枯褐(枯草色，非近黑)
   const tint = multiplyColor(multiplyColor(relight, colorVar), dark);
