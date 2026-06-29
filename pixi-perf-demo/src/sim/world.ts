@@ -1,5 +1,5 @@
 import { CROPS, CROP_KEYS, GROW_SEC, CROP_SEASON, SEASON_NAME, type CropKey } from '../data/crops';
-import { type WeatherType, wxIntensity, isDisaster } from '../data/scenes';
+import { type WeatherType, wxIntensity, isDisaster, sceneLum } from '../data/scenes';
 import { MAP } from '../data/tokens';
 import { autoPoints, getQuad, quadCenterPct, type PlantPoint } from './layout';
 
@@ -38,6 +38,8 @@ export interface Plot {
   idle: number; // 闲置 tick 计数（无活株则累加）→ 闲置土地税
   malign: number; // 恶性草(Yellow Dock)侵染度 0..100：快蔓延 / 田里抢营养 / 路上毁路 / 难根除
   fertCd: number; // 施肥冷却(ms)：近期施过 → 暂不需要再施（任务按生长需求设定）
+  lastCrop?: CropKey; // #8 上一茬作物：轮作判定用
+  monoCount: number;  // #8 连作同作物茬数：连作土壤疲劳(起始健康递减)；轮作换作物归零
 }
 
 // AI 自主经营学习状态（移植原型 state.ai 的 Q 学习经济）
@@ -90,6 +92,8 @@ export interface RealWx {
   temp: number;
   label: string;
   at: number;
+  sunriseTod?: number; // #7 当天日出/日落 时刻(农场当地 0..1)：开灯第一权重
+  sunsetTod?: number;
 }
 
 export interface RobotState {
@@ -145,7 +149,7 @@ const SEED: [CropKey, number][] = [
 ];
 
 // 学习成果存档 schema 版本：结构变更时 +1 → 旧档自动作废（不读、回落 fresh），防版本错配注入脏数据
-const BRAIN_SAVE_V = 3; // schema/语义版本：+1 自动作废旧档。v2=情境偏置 ctxKind；v3=养护类回报语义修正(浇水等不再被学成亏本→作废旧的负偏置)
+const BRAIN_SAVE_V = 4; // schema/语义版本：+1 自动作废旧档。v2=情境偏置 ctxKind；v3=养护类回报语义修正；v4=决策重写为确定性效用模型(传感器×阶段×天气×行情×资金×近便)，仅经济参数(sellThreshold/storeBias/densBias/ai.q)仍在线自适应
 
 // 经济常量（原样移植原型）
 const AI_START = 2500;
@@ -156,10 +160,15 @@ const BANKRUPT = -3000; // 资金跌破即破产重置
 // —— 学习型机器人新机制 ——
 const STOCK_CAP = 30; // 随身携带收获上限(单位)：满了不能再收，必须出售/入库（迫使学习何时清货）
 const SEED_BASE = 990; // 种子批基准价；实际价随种子行情 seedMkt 浮动
-const POWER_VALUE = 0.5; // 每 1% 电量的金币当量(用于回报中给耗电计价)
 const CARRY_WORK_MUL = 1.5; // 满载时作业耗电额外倍率(载货越多越费电)
 const CARRY_MOVE_DRAIN = 0.03; // 载货移动每 1% 距离的耗电(空载几乎免费，对齐 H5；载货才耗)
 const FERT_CD = 16000; // 施肥冷却(ms)：施过后一段时间作物不再"需要"施肥（按生长需求设任务）
+// —— 机器人决策(确定性效用)权重与阈值（重写 v2：规则/效用核心 + 经济参数在线自适应）——
+// 效用 = DW_VALUE·价值 + DW_URGENCY·紧迫 − DW_POWER·耗电 + DW_PROX·近便度。权重显式可调，决策可预测、不学歪。
+const DW_VALUE = 1.0, DW_URGENCY = 1.0, DW_POWER = 0.42, DW_PROX = 0.7;
+const LOW_FUNDS = 800;        // #8 资金告急阈值：低于此 → 激进盈利（缓修路、单种高价值作物、不强制轮作）
+const LIGHT_ON_LUM = 0.34;    // #7 能见度阈值：sceneLum 低于此(暮色/暴雨/雾)→ 开灯（第二权重；第一权重=日出日落时刻）
+const MONO_FATIGUE = 0.12;    // #8 连作土壤疲劳：同地块连种同作物，每多一茬起始健康 −此值（轮作可重置→保土壤健康）
 
 // 学习型机器人「大脑」：对候选动作打分 U=wValue·收益+wUrgency·紧迫−wPower·耗电+各类偏置；
 // 回报(净资产增量/省电/省税)反向更新权重 → 全局以"最大化经营盈利、最省电高效"为目标自我学习。
@@ -183,6 +192,7 @@ interface Cand {
   value: number; // 收益特征(金币当量/1000 量级)
   urgency: number; // 紧迫特征(0..3)
   power: number; // 估计耗电(含距离+载重)
+  prox?: number; // 0..1：地块离 仓库/商店/基站 的近便度(越近越优先种养，买卖/充电路程短)
   res?: ResKey; // buyres 用：补给哪种物料
   score: number;
 }
@@ -294,7 +304,6 @@ export class World {
   robotBattery = 86;
   private rPhase: 'decide' | 'move' | 'work' | 'charge' = 'decide';
   private rTask: RobotTask | null = null;
-  private rPend: { ck: string; value: number; urgency: number; power: number; nw0: number; bat0: number; ctx: string } | null = null; // 待结算动作(回报学习)；ctx=决策时情境键
   private rDest: { left: number; top: number } = { left: MAP.robotHome.left, top: MAP.robotHome.top };
   private rWork = 0;
   private rDidTask = false;
@@ -325,6 +334,15 @@ export class World {
     const sh = new Date(n.getTime() + n.getTimezoneOffset() * 60000 + 8 * 3600000);
     return (sh.getHours() * 3600 + sh.getMinutes() * 60 + sh.getSeconds()) / 86400;
   }
+  // #7 开灯/关灯：① 第一权重=昼夜时刻(live 用天气接口的真实日出/日落；加速用合成晨昏)；② 第二权重=环境亮度(能见度)。
+  // 入夜 或 能见度低于阈值(极端天气白天也很暗) → 开灯。
+  private isClockNight(): boolean {
+    const w = this.realWx;
+    if (this.live && w && w.sunriseTod != null && w.sunsetTod != null) return this.tod < w.sunriseTod || this.tod > w.sunsetTod;
+    return this.tod < 0.26 || this.tod > 0.80; // 合成晨昏兜底（与 lifeTick 夜间口径一致）
+  }
+  visibility(): number { return sceneLum(this.tod, this.weather.type, this.weatherIntensity()); } // 能见度 0..1（昼夜×天气压暗）
+  lightsOn(): boolean { return this.isClockNight() || this.visibility() < LIGHT_ON_LUM; }
 
   // weather_code + 气温 → 游戏天气类型（启发式，移植原型 _mapWx）
   mapWx(code: number | null, temp: number | null): WeatherType {
@@ -351,14 +369,18 @@ export class World {
     if (this.wxFetching) return;
     this.wxFetching = true;
     try {
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${FARM_LAT}&longitude=${FARM_LON}&current=weather_code,temperature_2m&timezone=Asia%2FShanghai`;
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${FARM_LAT}&longitude=${FARM_LON}&current=weather_code,temperature_2m&daily=sunrise,sunset&timezone=Asia%2FShanghai`;
       const r = await fetch(url, { cache: 'no-store' });
       if (!r.ok) throw new Error('bad status');
       const j = await r.json();
       const c = j.current || {};
       const code = c.weather_code ?? null;
       const temp = c.temperature_2m ?? null;
-      this.realWx = { ok: true, type: this.mapWx(code, temp), code, temp, label: this.wxLabel(code), at: Date.now() };
+      // #7 解析当天日出/日落 → 农场当地时刻 0..1（ISO 含 Asia/Shanghai 本地钟点，直接取 HH:MM 与 localTod 同系）
+      const todOf = (iso?: string) => { const m = iso && /T(\d\d):(\d\d)/.exec(iso); return m ? (+m[1] * 60 + +m[2]) / 1440 : undefined; };
+      const sunriseTod = todOf(j.daily?.sunrise?.[0]);
+      const sunsetTod = todOf(j.daily?.sunset?.[0]);
+      this.realWx = { ok: true, type: this.mapWx(code, temp), code, temp, label: this.wxLabel(code), at: Date.now(), sunriseTod, sunsetTod };
     } catch {
       // 拉取失败：保留上次成功值；若从未成功则标记离线（游戏走随机回退）
       if (!(this.realWx && this.realWx.ok)) {
@@ -391,14 +413,19 @@ export class World {
     return n;
   }
 
-  // ε-greedy 选种：先探索，后按「行情毛利 0.55 + 学习 Q 值 0.45」挑期望最高的作物（移植原型 chooseCrop）
-  private chooseCrop(): CropKey {
+  // 选种(#4 行情 + #8 轮作/告急)：行情毛利 + 经济层 Q 值 + 应季加成。
+  //  · 正常资金 → 轮作：避免连种同作物(护土壤健康)，同作物大幅降分；
+  //  · 资金告急(cashStrained) → 不忌连作、并偏向高价值作物(单种冲现金，代价是连作土壤疲劳，见 plantPlot)。
+  private chooseCrop(p?: Plot): CropKey {
     if (Math.random() < this.ai.explore) return CROP_KEYS[(Math.random() * CROP_KEYS.length) | 0];
+    const strained = this.cashStrained();
+    const last = p?.lastCrop;
     let best: CropKey = CROP_KEYS[0], bestV = -Infinity;
     for (const k of CROP_KEYS) {
       const c = CROPS[k];
-      // 行情毛利 + 学习 Q + 应季加成（应季作物长得快产量高 → 优先种当季）
-      const ev = 0.55 * (c.sell * (this.market[k] || 1) - c.seed) + 0.45 * (this.ai.q[k] || 0) + (this.seasonFit(k) - 0.7) * 180;
+      let ev = 0.55 * (c.sell * (this.market[k] || 1) - c.seed) + 0.45 * (this.ai.q[k] || 0) + (this.seasonFit(k) - 0.7) * 180;
+      if (!strained && last && k === last) ev -= 400;                  // 轮作：连种同作物大幅降分
+      if (strained) ev += c.sell * (this.market[k] || 1) * 0.5;        // 告急：加码高价值
       if (ev > bestV) { bestV = ev; best = k; }
     }
     return best;
@@ -424,7 +451,7 @@ export class World {
       // 初始 weedProg 与起始 weeds 等级对齐（撂荒进度的反推）
       const weedProg = weeds === 2 ? 60 : weeds === 1 ? 24 : 0;
       // 恶性草初始：仅 1 块低度侵染做"种源"(起点低于机器人清除阈值，缓慢爬升)，整体保持稀少
-      this.plots.push({ id: i, slots, weeds, weedProg, roadWeed: 0, roadDmg: false, idle: 0, malign: i === 5 ? 12 : 0, fertCd: 0 });
+      this.plots.push({ id: i, slots, weeds, weedProg, roadWeed: 0, roadDmg: false, idle: 0, malign: i === 5 ? 12 : 0, fertCd: 0, monoCount: 0 });
     }
   }
 
@@ -536,7 +563,6 @@ export class World {
       this.robotAction = '待命中…';
       this.rPhase = 'decide';
       this.rTask = null;
-      this.rPend = null;
       return;
     }
     switch (this.rPhase) {
@@ -569,43 +595,81 @@ export class World {
     return { ecoMul: 0.5, durMul: 0.5, batMul: 0.5 }; // 消退
   }
 
-  // ===== 学习型决策大脑（替代固定优先级 robotDecide）=====
-  // 每步枚举全部可做的事 → 打分 U = wValue·收益 + wUrgency·紧迫 − wPower·耗电 + 类别偏置 → ε-greedy 择优。
-  // 动作完成后用「净资产增量 − 耗电成本」当回报反向更新权重（learnFromTask）→ 全局自学：最大化盈利、最省电高效、避闲置税。
+  // ===== 决策核心（重写 v2：确定性效用 + 经济层在线自适应）=====
+  // 每步枚举可做的事 → 效用 U = DW_VALUE·价值 + DW_URGENCY·紧迫 − DW_POWER·耗电 + DW_PROX·近便度 → 取最优(极小 ε 防平局抖动)。
+  // 紧迫/价值由 传感器×生长阶段×天气×行情×资金 显式算出(见 candidates)；不再靠黑箱权重学习 → 可控、可预测、不学歪。
+  // 仍保留经济层在线自适应：sellThreshold/storeBias(econTick 据盈亏)、densBias/ai.q(收获据质量/毛利)。
   private robotBrain() {
-    if (this.robotBattery < 12) { // 反射层：电量临界强制充电（防探索把自己困死）
+    if (this.robotBattery < 12) { // 反射层：电量临界强制充电（防把自己困死）
       this.commit({ ck: 'charge', task: { kind: 'charge', label: '返回充电', plotId: -1, workMs: 0, bat: 0, atBuilding: true }, dest: MAP.station, value: 0, urgency: 3, power: 0, score: 0 });
       return;
     }
     const cands = this.candidates();
-    const b = this.brain;
-    const ctx = this.contextKey();
-    const cb = b.ctxKind[ctx] || (b.ctxKind[ctx] = {}); // 当前情境的偏置表(按需建)
     let best = cands[0], bestScore = -Infinity;
     for (const c of cands) {
-      c.score = b.wValue * c.value + b.wUrgency * c.urgency - b.wPower * c.power
-              + (b.kind[c.ck] || 0)   // 全局偏置(学共性)
-              + (cb[c.ck] || 0);      // 情境偏置(学差异：低电量更想充电、满载更想清货…)
+      c.score = DW_VALUE * c.value + DW_URGENCY * c.urgency - DW_POWER * c.power + DW_PROX * (c.prox || 0);
       if (c.score > bestScore) { bestScore = c.score; best = c; }
     }
-    this.commit((Math.random() < b.eps) ? cands[(Math.random() * cands.length) | 0] : best); // ε-greedy
+    this.commit((Math.random() < this.brain.eps) ? cands[(Math.random() * cands.length) | 0] : best); // 极小 ε 抖动
   }
 
-  // 情境分桶 → 情境键(如 "b1c2m0")：电量/载重/行情各三档，最多 27 桶(字典稀疏，实际更少)。
-  // 粗粒度是刻意的——控制状态数、避免把连续量直接当 key 导致桶爆炸学不动。
-  private contextKey(): string {
-    const bat = this.robotBattery < 30 ? 0 : this.robotBattery < 70 ? 1 : 2;
-    const cf = this.carryFrac();
-    const carry = cf < 0.34 ? 0 : cf < 0.8 ? 1 : 2;
-    const avgMkt = CROP_KEYS.reduce((s, k) => s + (this.market[k] || 1), 0) / CROP_KEYS.length;
-    const mkt = avgMkt < 0.95 ? 0 : avgMkt < 1.1 ? 1 : 2;
-    return `b${bat}c${carry}m${mkt}`;
+  // #8 资金告急：低于阈值 → 激进盈利模式(缓修路等长线投资、单种高价值作物、不强制轮作)
+  cashStrained(): boolean { return this.ai.funds < LOW_FUNDS; }
+  // #2 生长阶段需求曲线（机器人"视觉"读 growth 阶段）：幼苗勤浇少肥 / 生长水肥跟上 / 成熟收获停水停肥
+  private stageNeed(growth: number): { water: number; fert: number } {
+    if (growth >= 380) return { water: 0, fert: 0 };
+    if (growth < 100) return { water: 1.35, fert: 0.3 };
+    return { water: 1.0, fert: 1.25 };
+  }
+  // #1+#2+#3 浇水紧迫(0..3)：土壤湿度传感器(缺水 dry / 低湿 moist，由天气演化) × 生长阶段需求；降水/霜冻/无需水阶段 → 0
+  private waterReq(p: Plot): number {
+    const wx = this.weather.type;
+    if (wx === 'rain' || wx === 'lightrain' || wx === 'frost') return 0;
+    let u = 0;
+    for (const sl of p.slots) {
+      if (sl.phase !== 'grow' || sl.dead || sl.growth >= 400) continue;
+      const need = this.stageNeed(sl.growth).water; if (need <= 0) continue;
+      const sev = sl.dry > 0 ? Math.min(3, 1 + sl.dry * 0.5) : sl.moist <= 3 ? (3 - sl.moist) * 0.6 : 0; // 传感器读数→缺水严重度
+      u = Math.max(u, sev * need);
+    }
+    return Math.min(3, u);
+  }
+  // #1+#2 施肥紧迫(0..3)：肥力传感器(fertCd 冷却=近期已施则肥力足) × 生长阶段需肥；幼苗少肥、收获停肥
+  private fertReq(p: Plot): number {
+    if (p.fertCd > 0) return 0;
+    let u = 0;
+    for (const sl of p.slots) {
+      if (sl.phase !== 'grow' || sl.dead) continue;
+      const need = this.stageNeed(sl.growth).fert; if (need <= 0) continue;
+      u = Math.max(u, need * 1.4);
+    }
+    return Math.min(3, u);
+  }
+  // #5 近便度(0..1)：地块到 仓库/商店/基站 的最近距离 → 越近越优先种养(买卖/存储/充电路程短)
+  private buildingProx(ap: { left: number; top: number }): number {
+    const d = Math.min(
+      Math.hypot(ap.left - MAP.shop.left, ap.top - MAP.shop.top),
+      Math.hypot(ap.left - MAP.warehouse.left, ap.top - MAP.warehouse.top),
+      Math.hypot(ap.left - MAP.station.left, ap.top - MAP.station.top),
+    );
+    return Math.max(0, 1 - d / 60);
+  }
+  // #6+#8 修路紧迫(0..2.5)：路损越重越紧迫；资金告急 → 大幅压低(长线投资让位短期盈利)；没钱(<320)→0
+  private repairReq(p: Plot): number {
+    if (!(p.roadDmg || p.roadWeed > 0) || this.ai.funds < 320) return 0;
+    const bad = (p.roadDmg ? 1.4 : 0) + p.roadWeed * 0.35;
+    return Math.min(2.5, bad * (this.cashStrained() ? 0.25 : 1));
+  }
+  // #6 路面磨损系数(0..1)：全网路损(破损+爬草)越重 → 机器人移动越慢、越费电（修路即消除它的长线投资回报）
+  private roadWear(): number {
+    let bad = 0;
+    for (const p of this.plots) bad += (p.roadDmg ? 1 : 0) + p.roadWeed * 0.25;
+    return Math.min(1, bad / Math.max(1, this.plots.length * 0.8));
   }
 
-  // 枚举候选动作（含收益/紧迫/耗电特征）。耗电 = 作业电×载重倍率 + 距离×载重 → 距离近、空载更省电。
+  // 枚举候选动作（价值/紧迫/近便度 由传感器×阶段×天气×行情×资金显式算出；耗电=作业电×载重 + 距离×载重）
   private candidates(): Cand[] {
     const out: Cand[] = [];
-    const wx = this.weather.type;
     const e = this.econ;
     const stockN = this.cropCount(e.stock);
     const whN = this.cropCount(e.wh);
@@ -613,97 +677,67 @@ export class World {
     const carryMul = 1 + carry * CARRY_WORK_MUL;
     const avgMkt = CROP_KEYS.reduce((s, k) => s + (this.market[k] || 1), 0) / CROP_KEYS.length;
     const room = STOCK_CAP - stockN;
-    const add = (ck: string, task: RobotTask, dest: { left: number; top: number }, value: number, urgency: number, workBat: number, res?: ResKey) => {
-      const power = workBat * 0.6 * carryMul + this.distTo(dest) * 0.01 * carryMul; // 耗电特征(降权重，避免压垮播种/翻耕等养护)，仍保留距离/载重感知
-      out.push({ ck, task, dest, value, urgency, power, res, score: 0 });
+    const add = (ck: string, task: RobotTask, dest: { left: number; top: number }, value: number, urgency: number, workBat: number, prox = 0, res?: ResKey) => {
+      const power = workBat * 0.6 * carryMul + this.distTo(dest) * 0.01 * carryMul;
+      out.push({ ck, task, dest, value, urgency, power, prox, res, score: 0 });
     };
     for (const p of this.plots) {
       const ap = this.approachPoint(p.id);
       const idleR = Math.min(1.6, p.idle / IDLE_LIMIT); // 闲置税风险
-      if (room > 0) { // 采收（携带未满才收 → 满了被迫先清货）
+      const prox = this.buildingProx(ap);               // #5 近便度
+      if (room > 0) { // 采收：#4 行情高 → 更紧迫(择时收获)
         const ripe = p.slots.filter((sl) => sl.phase === 'grow' && !sl.dead && sl.growth >= 400);
-        if (ripe.length) add('harvest', { kind: 'harvest', label: '采收', plotId: p.id, workMs: 900, bat: 3, atBuilding: false }, ap, Math.min(9, ripe.length, room) * this.priceOf(ripe[0].crop) / 1000, 1.1, 3);
+        if (ripe.length) { const mkt = this.market[ripe[0].crop] || 1; add('harvest', { kind: 'harvest', label: '采收', plotId: p.id, workMs: 900, bat: 3, atBuilding: false }, ap, Math.min(9, ripe.length, room) * this.priceOf(ripe[0].crop) / 1000, 1.0 + Math.max(0, (mkt - 1) * 2), 3); }
       }
       if (p.slots.some((sl) => sl.dead)) add('clear', { kind: 'clear', label: '清枯', plotId: p.id, workMs: 600, bat: 3, atBuilding: false }, ap, 0.2, 0.7 + idleR, 3);
-      if (this.res.water > 0 && this.needWater(p)) { const u = this.plotThirst(p); add('water', { kind: 'water', label: '浇水', plotId: p.id, workMs: 720, bat: 3, atBuilding: false }, ap, 0.3, Math.max(1, Math.min(3, u * 0.5)), 3); }
-      if (wx === 'rain' && this.hasYoung(p)) { const tm = this.wxTaskMod(); add('drain', { kind: 'drain', label: '开沟排水', plotId: p.id, workMs: Math.round(900 * tm.durMul), bat: Math.max(1, Math.round(4 * tm.batMul)), atBuilding: false }, ap, 0.5, 1.6, 4); }
-      if (wx === 'frost' && this.res.eco >= 8 && this.hasYoung(p)) { const tm = this.wxTaskMod(); add('cover', { kind: 'cover', label: '覆盖保温', plotId: p.id, workMs: Math.round(900 * tm.durMul), bat: Math.max(1, Math.round(4 * tm.batMul)), atBuilding: false }, ap, 0.5, 1.6, 4); }
-      if (this.res.eco >= 20 && this.needFert(p)) add('fert', { kind: 'fert', label: '施肥', plotId: p.id, workMs: 720, bat: 3, atBuilding: false }, ap, 0.35, 0.5, 3);
+      // #1 浇水：土壤传感器×生长阶段紧迫
+      if (this.res.water > 0) { const u = this.waterReq(p); if (u > 0.05) add('water', { kind: 'water', label: '浇水', plotId: p.id, workMs: 720, bat: 3, atBuilding: false }, ap, 0.3, u, 3); }
+      // #1+#3 排水：雨天积水(flood)传感器触发
+      if (this.weather.type === 'rain' && this.hasYoung(p)) { const fl = Math.max(...p.slots.map((sl) => sl.flood || 0), 0); if (fl > 0) { const tm = this.wxTaskMod(); add('drain', { kind: 'drain', label: '开沟排水', plotId: p.id, workMs: Math.round(900 * tm.durMul), bat: Math.max(1, Math.round(4 * tm.batMul)), atBuilding: false }, ap, 0.5, Math.min(3, 0.8 + fl * 0.6), 4); } }
+      // #1+#3 保温：霜冻低温传感器触发
+      if (this.weather.type === 'frost' && this.res.eco >= 8 && this.hasYoung(p)) { const tm = this.wxTaskMod(); add('cover', { kind: 'cover', label: '覆盖保温', plotId: p.id, workMs: Math.round(900 * tm.durMul), bat: Math.max(1, Math.round(4 * tm.batMul)), atBuilding: false }, ap, 0.5, 1.7, 4); }
+      // #1+#2 施肥：肥力传感器×生长阶段
+      if (this.res.eco >= 20) { const u = this.fertReq(p); if (u > 0.05) add('fert', { kind: 'fert', label: '施肥', plotId: p.id, workMs: 720, bat: 3, atBuilding: false }, ap, 0.35, u, 3); }
       if (p.malign >= 35) add('weedm', { kind: 'weed', label: '清除恶性草', plotId: p.id, workMs: 2800, bat: 9, atBuilding: false }, ap, 0.6, 1.4, 9);
       else if (p.weedProg >= 50 && this.hasYoung(p)) add('weed', { kind: 'weed', label: '除草', plotId: p.id, workMs: 1600, bat: 5, atBuilding: false }, ap, 0.3, 0.6, 5);
-      if ((p.roadDmg || p.roadWeed > 0) && this.ai.funds >= 320) add('repair', { kind: 'repair', label: '修路', plotId: p.id, workMs: 1900, bat: 3, atBuilding: false }, ap, -0.6, 0.7, 3);
-      if (this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)) add('till', { kind: 'till', label: '翻耕整地', plotId: p.id, workMs: 1100, bat: 4, atBuilding: false }, ap, 1.1, 1.0 + idleR * 1.3, 4); // 空出即翻耕(基础紧迫够高、不必等闲置攒够)；越久越紧迫 → 及时复种
-      if (this.plotTilled(p) && this.econ.seedStock > 0) add('plant', { kind: 'plant', label: '播种', plotId: p.id, workMs: 720, bat: 3, atBuilding: false }, ap, 1.6, 0.9 + idleR * 1.3, 3); // 播种=投资未来收成，价值/紧迫足够高 → 不撂荒
+      // #6+#8 修路：路损紧迫(资金告急时大幅压低)
+      { const u = this.repairReq(p); if (u > 0) add('repair', { kind: 'repair', label: '修路', plotId: p.id, workMs: 1900, bat: 3, atBuilding: false }, ap, 0.3, u, 3, prox); }
+      // #5 翻耕/播种：近便地块优先(prox 加成)；越闲置越紧迫
+      if (this.plotHasEmpty(p) && !this.hasYoung(p) && !p.slots.some((sl) => sl.dead)) add('till', { kind: 'till', label: '翻耕整地', plotId: p.id, workMs: 1100, bat: 4, atBuilding: false }, ap, 1.1, 1.0 + idleR * 1.3, 4, prox);
+      if (this.plotTilled(p) && this.econ.seedStock > 0) add('plant', { kind: 'plant', label: '播种', plotId: p.id, workMs: 720, bat: 3, atBuilding: false }, ap, 1.6, 0.9 + idleR * 1.3, 3, prox);
     }
-    // 经营：出售(行情高/库存陈/载重满 → 卖) vs 入库(行情低 → 囤等涨) —— 学习何时哪个划算
-    if (stockN > 0) { const base = e.fresh * this.cropVal(e.stock); add('sell', { kind: 'sell', label: '去商店出售', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, base * Math.max(0, avgMkt - 1.0) / 1000 + base * e.decay / 1000 + carry * 1.5, carry * 2 + (e.decay >= 0.09 ? 1 : 0), 3); }
+    // #4 市场驱动 卖 / 囤：行情高/库存陈/载重满 → 卖；行情低 → 入库等涨(storeBias 在线自适应)
+    if (stockN > 0) { const base = e.fresh * this.cropVal(e.stock); add('sell', { kind: 'sell', label: '去商店出售', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, base * Math.max(0, avgMkt - 1.0) / 1000 + base * e.decay / 1000 + carry * 1.5, carry * 2 + (e.decay >= 0.09 ? 1 : 0) + (this.cashStrained() ? 1.2 : 0), 3); }
     if (stockN >= 3) { const base = e.fresh * this.cropVal(e.stock); add('store', { kind: 'store', label: '去仓库入库', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.warehouse, base * e.decay / 1000 + (avgMkt < 1.0 ? this.ai.storeBias * 2.2 : -0.5) + carry * 1.2, carry * 1.5, 3); }
     if (whN > 0) add('sellwh', { kind: 'sellwh', label: '去商店清仓', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, this.cropVal(e.wh) * Math.max(0, avgMkt - 1.0) / 1000 + (avgMkt >= 1.05 ? 1 : 0), avgMkt >= 1.1 ? 1.2 : 0.2, 3);
-    // 种子供给：按「待复种地块(空地+已翻耕)」的需求采购 —— 缺口越大越紧迫，行情仅微调价值不致其转负。
-    // 修复"翻耕好的地因没种子而长期撂荒"：有地等着种、种子又不够时，采购种子是高紧迫动作而非可有可无的小事
-    // （旧版 urgency 固定 0.6、行情高时 value 转负 → buyseed 常年打不过其它任务 → 永远缺种 → 地一直空着）。
     let replantDemand = 0;
     for (const p of this.plots) if (this.plotHasEmpty(p) || this.plotTilled(p)) replantDemand++;
     if (replantDemand > 0 && this.econ.seedStock < replantDemand + 1) {
       const cost = this.seedBatchCost();
-      if (this.ai.funds >= cost) {
-        const gap = replantDemand + 1 - this.econ.seedStock; // 种子缺口(地块数)
-        add('buyseed', { kind: 'buy', label: '采购种子', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, 1.4 + Math.max(-0.3, (SEED_BASE - cost) / 1000), 1.2 + Math.min(2.2, gap * 0.7), 3);
-      }
+      if (this.ai.funds >= cost) { const gap = replantDemand + 1 - this.econ.seedStock; add('buyseed', { kind: 'buy', label: '采购种子', plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, 1.4 + Math.max(-0.3, (SEED_BASE - cost) / 1000), 1.2 + Math.min(2.2, gap * 0.7), 3); }
     }
     const low = this.lowestRes();
-    if (low && this.ai.funds > 200) { const ratio = this.res[low] / RES_MAX[low]; add('buyres', { kind: 'buy', label: '采购' + RES_NAME[low], plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, 0.4, Math.min(2, (0.2 - ratio) * 6 + 0.4), 3, low); }
+    if (low && this.ai.funds > 200) { const ratio = this.res[low] / RES_MAX[low]; add('buyres', { kind: 'buy', label: '采购' + RES_NAME[low], plotId: -1, workMs: 1100, bat: 3, atBuilding: true }, MAP.shop, 0.4, Math.min(2, (0.2 - ratio) * 6 + 0.4), 3, 0, low); }
     add('charge', { kind: 'charge', label: '返回充电', plotId: -1, workMs: 0, bat: 0, atBuilding: true }, MAP.station, 0, Math.max(0, (62 - this.robotBattery) / 18), 0);
     add('idle', { kind: 'idle', label: '待命充电', plotId: -1, workMs: 0, bat: 0, atBuilding: true }, MAP.station, 0, 0.08, 0);
     return out;
   }
 
-  // 提交选定动作：记录待结算特征(回报学习) + 设置买货标志 + 启动任务
+  // 提交选定动作：设置买货标志 + 启动任务（v2 确定性效用：无权重学习，rPend 仅留接口、不再回归）
   private commit(c: Cand) {
     if (c.ck === 'buyseed') this.buySeed = true;
     else if (c.ck === 'buyres') { this.buyResKey = c.res || null; this.buySeed = false; }
-    this.rPend = { ck: c.ck, value: c.value, urgency: c.urgency, power: c.power, nw0: this.netWorth(), bat0: this.robotBattery, ctx: this.contextKey() };
     this.startTask(c.task, c.dest);
   }
 
-  // 动作完成后结算回报并更新权重（线性回报回归：打分逼近真实回报）
+  // 动作完成回调（v2：决策无权重学习；经济层自适应在 econTick/收获处。这里仅维护步数 + 节流落盘）
   private learnFromTask() {
-    const la = this.rPend; if (!la) return;
-    const b = this.brain;
-    const powerSpent = Math.max(0, la.bat0 - this.robotBattery);
-    const batGain = Math.max(0, this.robotBattery - la.bat0);
-    // 投资/养护类收益在「未来收成」(作物存活/生长/护苗)、当下净资产不升甚至降(种子/料/电不计入 netWorth)→
-    // 若用净资产增量当回报，会把它们学成"亏本"→ 越学越不愿做：机器人不肯种地撂荒、且【晴天该浇水也不浇】(浇水不涨净资产只耗电→kind['water'] 被学到 −3 压制)。
-    // 故这些任务用其预期价值(value)作正向塑形回报。养护类(浇水/施肥/排水/保温/除草)只在 needWater/needFert/天气 门控满足时才进候选 → 正向塑形不会导致过量养护。
-    const invest = la.ck === 'plant' || la.ck === 'till' || la.ck === 'buyseed' || la.ck === 'buyres' || la.ck === 'clear'
-      || la.ck === 'water' || la.ck === 'fert' || la.ck === 'drain' || la.ck === 'cover' || la.ck === 'weed' || la.ck === 'weedm';
-    const r = invest
-      ? Math.max(0.4, la.value) - powerSpent * POWER_VALUE * 0.05
-      : (this.netWorth() - la.nw0) / 1000 - powerSpent * POWER_VALUE * 0.1 + batGain * POWER_VALUE * 0.02; // 其余(收/卖/入库/充电)按净资产增量 − 耗电 + 充电价值
-    const pred = b.wValue * la.value + b.wUrgency * la.urgency - b.wPower * la.power + (b.kind[la.ck] || 0);
-    const err = Math.max(-3, Math.min(3, r - pred)); // 误差截断 → 稳定
-    const a = 0.015;
-    b.wValue = clampW(b.wValue + a * err * la.value);
-    b.wUrgency = clampW(b.wUrgency + a * err * la.urgency);
-    b.wPower = clampW(b.wPower - a * err * la.power); // power 负向特征
-    b.kind[la.ck] = Math.max(-3, Math.min(3, (b.kind[la.ck] || 0) + a * err)); // 全局偏置(共性)
-    const cb = b.ctxKind[la.ctx] || (b.ctxKind[la.ctx] = {}); // 情境偏置(差异)：同一动作在不同情境下学到不同价值
-    cb[la.ck] = Math.max(-3, Math.min(3, (cb[la.ck] || 0) + a * err));
-    b.steps++;
-    b.netReward += r;
-    b.eps = Math.max(0.05, b.eps * 0.9992); // 探索率缓慢衰减 → 越学越笃定
-    if (b.steps % 20 === 0) this.saveBrain(); // 节流落盘：每 20 次决策存一次（关页/隐藏时另强存一次，见 main.ts）
-    this.rPend = null;
+    this.brain.steps++;
+    if (this.brain.steps % 20 === 0) this.saveBrain();
   }
 
-  private netWorth(): number { return this.ai.funds + this.econ.fresh * this.cropVal(this.econ.stock) + this.cropVal(this.econ.wh); }
   private distTo(d: { left: number; top: number }): number { return Math.hypot(d.left - this.robot.left, d.top - this.robot.top); }
   private carryFrac(): number { return Math.min(1, this.cropCount(this.econ.stock) / STOCK_CAP); }
-  private plotThirst(p: Plot): number {
-    let u = 0;
-    for (const sl of p.slots) { if (sl.phase !== 'grow' || sl.dead || sl.growth >= 400) continue; if (sl.moist <= 2 || sl.dry > 0) u = Math.max(u, sl.dry * 1.2 + (3 - sl.moist)); }
-    return u;
-  }
   // 作物是否「需要浇水」：阴雨/霜冻/夜间植物蒸腾弱基本不需；晴/旱白天且有干燥活株才需（按天气+生长设任务，非看库存）
   needWater(p: Plot): boolean {
     const wx = this.weather.type;
@@ -822,7 +856,8 @@ export class World {
     if (dist > 0.001) this.robot.face = Math.atan2((dt / 100) * 720, (dl / 100) * 1280);
     this.robotAction = t.atBuilding ? t.label + '，沿路前往…' : `前往 ${t.plotId + 1} 号地 · ${t.label}…`;
     const wearSlow = 1 - Math.min(0.5, this.ai.wear * 0.5); // 低资金老化拖慢
-    const speed = (this.stress ? 0.020 : 0.0115) * wearSlow; // pct/ms：放慢约 40%（机器人移动不再过快）
+    const rw = this.roadWear(); // #6 路面破损系数
+    const speed = (this.stress ? 0.020 : 0.0115) * wearSlow * (1 - rw * 0.45); // pct/ms：放慢约 40%；#6 路损再减速至多 45%
     const step = speed * dtMS;
     if (dist <= step || dist < 0.4) {
       this.robot.left = wp.left; this.robot.top = wp.top;
@@ -839,6 +874,7 @@ export class World {
     }
     const carry = this.carryFrac();
     if (carry > 0) this.robotBattery = Math.max(0, this.robotBattery - CARRY_MOVE_DRAIN * carry * Math.min(dist, step)); // 载货移动耗电（空载几乎免费）→ 学习少载多跑/就近清货
+    if (rw > 0) this.robotBattery = Math.max(0, this.robotBattery - rw * 0.012 * Math.min(dist, step)); // #6 路损颠簸额外耗电（空载也费）→ 修路的省电回报
   }
 
   private robotWork(dtMS: number) {
@@ -1183,7 +1219,11 @@ export class World {
     const p = this.plots[plotId];
     if (!p || this.econ.seedStock <= 0) return;
     if (!p.slots.length || !p.slots.every((sl) => sl.phase === 'tilled')) return; // 仅整块已翻耕才播种（避免误伤在长作物）
-    const crop = this.chooseCrop();
+    const crop = this.chooseCrop(p);
+    // #8 连作土壤疲劳：同地块连种同作物 → monoCount 累加、起始健康按 MONO_FATIGUE 递减(轮作换作物则归零→恢复)
+    p.monoCount = (p.lastCrop === crop) ? (p.monoCount || 0) + 1 : 0;
+    p.lastCrop = crop;
+    const soilHealth = Math.max(0.3, 1 - p.monoCount * MONO_FATIGUE);
     const q = getQuad(plotId);
     const pts = autoPoints(plotId, crop, q, (this.stress ? 3 : 0) + Math.min(0, Math.round(this.brain.densBias))); // densBias 只向「更稀」学(≤0)：理想密度已够繁茂，再密只增精灵不增产(收成封顶9单位)→ 限精灵数防卡顿
     p.slots = pts.map((pt) => {
@@ -1193,7 +1233,7 @@ export class World {
         pt, crop, growth: 0, rate,
         moist: 8, dry: 0, flood: 0, frost: 0, parch: 0, age: 0,
         dead: false, deathKind: '' as const, respawnT: 0,
-        fallowMS: this.stress ? 1200 : 2200, health: 1, plantQual: 1, phase: 'grow' as const,
+        fallowMS: this.stress ? 1200 : 2200, health: soilHealth, plantQual: 1, phase: 'grow' as const,
       };
     });
     this.assessPlanting(p); // 种植考核：行距 × 应季 → 各株 plantQual

@@ -13,7 +13,7 @@ import { WeatherOverlay } from './scene/weather';
 import { Particles } from './scene/particles';
 import { Hud, type SceneTier } from './ui/hud';
 import { GameHud } from './ui/gameHud';
-import { dayState, type WeatherType } from './data/scenes';
+import { type WeatherType } from './data/scenes';
 
 async function boot() {
   const root = document.getElementById('fp-root')!;
@@ -304,8 +304,8 @@ async function boot() {
     }
 
     // 夜间「被照对象增强」：把当前场景(背景+天气+作物)采样进 RT，供 enhance 层透过光照遮罩显示增强版。
-    // 仅夜间(light>0.04)且机器人在场时启用 → 白天/隐藏时关闭，零额外开销。
-    const litNow = world.toggles.lightPool && dayState(world.tod).light > 0.04 && !world.robot.hidden;
+    // #7 开灯 = world.lightsOn()：以天气 API 的日出/日落精确时间为第一权重，环境亮度(极端天气暗昼)为第二权重。
+    const litNow = world.toggles.lightPool && world.lightsOn() && !world.robot.hidden;
     enhance.visible = litNow;
     if (litNow) {
       app.renderer.render({ container: background.view, target: sceneRT, clear: true });
