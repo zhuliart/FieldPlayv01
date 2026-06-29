@@ -13,6 +13,7 @@ import { WeatherOverlay } from './scene/weather';
 import { Particles } from './scene/particles';
 import { Hud, type SceneTier } from './ui/hud';
 import { GameHud } from './ui/gameHud';
+import { AiPanel } from './ui/aiPanel';
 import { type WeatherType } from './data/scenes';
 
 async function boot() {
@@ -211,6 +212,17 @@ async function boot() {
   // 全量 HUD（DOM 叠加，挂在 #fp-root 内随舞台缩放）
   const gameHud = new GameHud(root, gameLayer, world);
 
+  // —— 2 号画布：AI 决策状态面板（全屏 DOM 仪表盘，挂 body、z-index 高于性能/FPS UI）——
+  const aiPanel = new AiPanel(document.body, world);
+  // 画布切换：1 号=田地(默认)，2 号=AI 面板；按 1/2 切换，互斥显示。
+  let view: 1 | 2 = 1;
+  const setView = (v: 1 | 2) => {
+    view = v;
+    if (v === 2) aiPanel.show();
+    else aiPanel.hide();
+    if (switchBtn) switchBtn.textContent = v === 1 ? '📊 AI' : '🌾 田地';
+  };
+
   // —— 一键隐藏/显示全部 UI（桌面按 T；移动端三连击屏幕）→ 纯净田地视图，便于观赏/截图 ——
   let hideHint: HTMLDivElement | null = null;
   const toggleUi = () => {
@@ -228,12 +240,19 @@ async function boot() {
       setTimeout(() => { if (hideHint === hint) { hint.remove(); hideHint = null; } }, 1950);
     }
   };
-  // 桌面键盘：T=一键隐藏全部 UI；E=单独开关基站 UI（避开输入框/系统快捷键）
+  // T=隐藏/显示「当前画布」：1 号→隐藏全部游戏 UI（纯田地）；2 号→隐藏 AI 面板（露出田地，再按恢复）。
+  const toggleCurrent = () => {
+    if (view === 2) { if (aiPanel.visible) aiPanel.hide(); else aiPanel.show(); }
+    else toggleUi();
+  };
+  // 桌面键盘：1/2=切换画布；T=隐藏/显示当前画布；E=单独开关基站 UI（避开输入框/系统快捷键）
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return; // 不抢系统快捷键
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    if (e.key === 't' || e.key === 'T') toggleUi();
+    if (e.key === '1') setView(1);
+    else if (e.key === '2') setView(2);
+    else if (e.key === 't' || e.key === 'T') toggleCurrent();
     else if (e.key === 'e' || e.key === 'E') gameHud.toggleStation();
   });
   // 移动端：三连击屏幕（同一区域内 3 次快速点按 → 与正常分散的游戏点击区分）
@@ -243,11 +262,22 @@ async function boot() {
     if (taps.length && (now - taps[taps.length - 1] > 500 || Math.abs(e.clientX - tapX) + Math.abs(e.clientY - tapY) > 60)) taps = []; // 超时/移位 → 重新计数
     tapX = e.clientX; tapY = e.clientY;
     taps.push(now);
-    if (taps.length >= 3) { taps = []; toggleUi(); }
+    if (taps.length >= 3) { taps = []; toggleCurrent(); }
   }, { capture: true });
+
+  // 移动端无键盘 → 提供一个浮动按钮在 1/2 画布间切换（桌面也可点）
+  const switchBtn = document.createElement('button');
+  switchBtn.textContent = '📊 AI';
+  switchBtn.title = '切换 田地(1) / AI 面板(2)';
+  switchBtn.style.cssText = 'position:fixed; top:10px; right:10px; z-index:2001; padding:7px 12px; border:none; border-radius:10px; background:rgba(20,30,46,.86); color:#9fe0ff; font:800 13px "Noto Sans SC",sans-serif; box-shadow:0 3px 10px rgba(0,0,0,.35); cursor:pointer;';
+  switchBtn.addEventListener('click', () => setView(view === 1 ? 2 : 1));
+  document.body.appendChild(switchBtn);
 
   // 默认进入「常规」档
   applyTier('normal');
+
+  // 深链：URL 带 #ai → 直接进 2 号画布（AI 面板），便于分享/书签查看 AI 决策状态
+  if (location.hash.toLowerCase() === '#ai') setView(2);
 
   document.getElementById('fp-boot')?.remove();
 
@@ -316,6 +346,7 @@ async function boot() {
     daynight.update(world.tod, world.toggles.dayTint, dtMS);
     particles.update(dtMS);
     gameHud.update(dtMS);
+    aiPanel.update(dtMS); // 2 号画布可见时节流刷新 AI 决策仪表盘
 
     // 边缘补全背景：约每 700ms 刷新（节流）
     backdropAcc += dtMS;

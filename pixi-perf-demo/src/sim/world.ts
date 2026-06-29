@@ -197,6 +197,29 @@ interface Cand {
   score: number;
 }
 
+// ===== AI 决策可视化快照（供 2 号画布的「AI 决策状态」面板读取，纯只读，不改 sim）=====
+export interface AiScoredCand { ck: string; label: string; plotId: number; value: number; urgency: number; power: number; prox: number; score: number; chosen: boolean; }
+export interface AiPlotDiag {
+  id: number; phase: string; crops: string; stageText: string; growth: number;
+  moist: number; dry: number; flood: number; frost: number; health: number;
+  weedProg: number; malign: number; roadWeed: number; roadDmg: boolean; idle: number;
+  waterReq: number; fertReq: number; repairReq: number; prox: number; lastCrop: string; monoCount: number;
+}
+export interface AiSnapshot {
+  step: number; mode: string; live: boolean; stress: boolean; clock: string; tod: number; season: string;
+  weather: string; weatherInt: number;
+  lights: { on: boolean; clockNight: boolean; sunrise: string; sunset: string; visibility: number; threshold: number };
+  robot: { battery: number; charging: boolean; action: string; carryFrac: number; stockN: number; left: number; top: number; moving: boolean };
+  funds: number; cashStrained: boolean; lowFunds: number;
+  econ: { stock: { k: string; n: number }[]; stockN: number; fresh: number; decay: number; fee: number; wh: { k: string; n: number }[]; whN: number; seedStock: number; seedMkt: number; stockCap: number };
+  market: { k: string; v: number; season: boolean }[];
+  weights: { value: number; urgency: number; power: number; prox: number };
+  adaptive: { sellThreshold: number; storeBias: number; densBias: number; eps: number; q: { k: string; v: number }[] };
+  stats: { trades: number; sells: number; harvests: number; deaths: number; plantings: number; decayLoss: number; feesPaid: number; idleTaxPaid: number; spikeGain: number; wear: number; fails: number; last: string };
+  decision: { chosen: string; ranked: AiScoredCand[] } | null;
+  plots: AiPlotDiag[];
+}
+
 // 机器人物料库存：作业消耗、去商店补给
 // 机器人作业物料（对齐 H5 双池：水 + 生态肥）。保温/排水均吃生态肥；种子走 econ.seedStock。
 type ResKey = 'water' | 'eco';
@@ -267,6 +290,7 @@ export class World {
   // —— AI 自主经营学习 ——
   ai: AIState = freshAI();
   brain: BrainState = freshBrain(); // 学习型决策大脑（打分择优 + 回报更新权重）
+  aiTrace: { step: number; chosen: string; ranked: AiScoredCand[] } | null = null; // 最近一次决策的候选排名（供 2 号画布 AI 面板）
 
   // —— 收成库存 / 仓储经济（收获入此，机器人择机出售/入库）——
   econ: EconState = freshEcon();
@@ -601,7 +625,9 @@ export class World {
   // 仍保留经济层在线自适应：sellThreshold/storeBias(econTick 据盈亏)、densBias/ai.q(收获据质量/毛利)。
   private robotBrain() {
     if (this.robotBattery < 12) { // 反射层：电量临界强制充电（防把自己困死）
-      this.commit({ ck: 'charge', task: { kind: 'charge', label: '返回充电', plotId: -1, workMs: 0, bat: 0, atBuilding: true }, dest: MAP.station, value: 0, urgency: 3, power: 0, score: 0 });
+      const reflex: Cand = { ck: 'charge', task: { kind: 'charge', label: '⚡强制充电(电量<12)', plotId: -1, workMs: 0, bat: 0, atBuilding: true }, dest: MAP.station, value: 0, urgency: 3, power: 0, score: 99 };
+      this.aiTrace = { step: this.brain.steps, chosen: 'charge(reflex)', ranked: [{ ck: reflex.ck, label: reflex.task.label, plotId: -1, value: 0, urgency: 3, power: 0, prox: 0, score: 99, chosen: true }] };
+      this.commit(reflex);
       return;
     }
     const cands = this.candidates();
@@ -610,7 +636,18 @@ export class World {
       c.score = DW_VALUE * c.value + DW_URGENCY * c.urgency - DW_POWER * c.power + DW_PROX * (c.prox || 0);
       if (c.score > bestScore) { bestScore = c.score; best = c; }
     }
-    this.commit((Math.random() < this.brain.eps) ? cands[(Math.random() * cands.length) | 0] : best); // 极小 ε 抖动
+    const chosen = (Math.random() < this.brain.eps) ? cands[(Math.random() * cands.length) | 0] : best; // 极小 ε 抖动
+    this.recordTrace(cands, chosen);
+    this.commit(chosen);
+  }
+  // 记录本步候选打分排名（top16）→ 供 2 号画布「AI 决策状态」面板展示「为什么这么决策」
+  private recordTrace(cands: Cand[], chosen: Cand) {
+    const ranked = cands.slice().sort((a, b) => b.score - a.score).slice(0, 16).map((c) => ({
+      ck: c.ck, label: c.task.label, plotId: c.task.plotId,
+      value: +c.value.toFixed(3), urgency: +c.urgency.toFixed(2), power: +c.power.toFixed(2),
+      prox: +(c.prox || 0).toFixed(2), score: +c.score.toFixed(3), chosen: c === chosen,
+    }));
+    this.aiTrace = { step: this.brain.steps, chosen: chosen.ck, ranked };
   }
 
   // #8 资金告急：低于阈值 → 激进盈利模式(缓修路等长线投资、单种高价值作物、不强制轮作)
@@ -764,6 +801,75 @@ export class World {
     return Math.min(3, Math.floor((this.calDay / 360) * 4));
   }
   seasonName(): string { return SEASON_NAME[this.season()]; }
+
+  // ===== AI 决策状态快照（供 2 号画布只读展示，绝不改 sim 状态）=====
+  private todToClock(t: number): string {
+    const x = (((t || 0) % 1) + 1) % 1;
+    const hh = Math.floor(x * 24), mm = Math.floor(((x * 24) % 1) * 60);
+    return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  }
+  aiSnapshot(): AiSnapshot {
+    const e = this.econ;
+    const stockN = this.cropCount(e.stock), whN = this.cropCount(e.wh);
+    const byCrop = (m: Record<CropKey, number>) => CROP_KEYS.filter((k) => (m[k] || 0) > 0).map((k) => ({ k: CROPS[k].name, n: +(m[k] || 0).toFixed(1) }));
+    const plots: AiPlotDiag[] = this.plots.map((p) => {
+      const grow = p.slots.filter((sl) => sl.phase === 'grow' && !sl.dead);
+      const cset = Array.from(new Set(grow.map((sl) => CROPS[sl.crop].name)));
+      const avgG = grow.length ? grow.reduce((s, sl) => s + sl.growth, 0) / grow.length : 0;
+      const domCrop = grow[0]?.crop;
+      const stageText = p.slots.some((sl) => sl.dead) ? '枯死'
+        : p.slots.every((sl) => sl.phase === 'empty') ? '空置(待翻耕)'
+        : p.slots.length && p.slots.every((sl) => sl.phase === 'tilled') ? '已翻耕(待播种)'
+        : domCrop ? CROPS[domCrop].stages[Math.min(4, Math.floor(avgG / 100))] : '—';
+      const moist = grow.length ? grow.reduce((s, sl) => s + sl.moist, 0) / grow.length : 0;
+      const dry = grow.length ? Math.max(...grow.map((sl) => sl.dry)) : 0;
+      const flood = grow.length ? Math.max(...grow.map((sl) => sl.flood)) : 0;
+      const frost = grow.length ? Math.max(...grow.map((sl) => sl.frost)) : 0;
+      const health = grow.length ? grow.reduce((s, sl) => s + sl.health, 0) / grow.length : 1;
+      return {
+        id: p.id, phase: grow.length ? 'grow' : (p.slots[0]?.phase || 'empty'),
+        crops: cset.join('+') || '—', stageText, growth: Math.round(avgG),
+        moist: +moist.toFixed(1), dry: +dry.toFixed(1), flood: +flood.toFixed(1), frost: +frost.toFixed(1), health: +health.toFixed(2),
+        weedProg: Math.round(p.weedProg), malign: Math.round(p.malign), roadWeed: p.roadWeed, roadDmg: p.roadDmg, idle: Math.round(p.idle),
+        waterReq: +this.waterReq(p).toFixed(2), fertReq: +this.fertReq(p).toFixed(2), repairReq: +this.repairReq(p).toFixed(2),
+        prox: +this.buildingProx(this.approachPoint(p.id)).toFixed(2),
+        lastCrop: p.lastCrop ? CROPS[p.lastCrop].name : '—', monoCount: p.monoCount,
+      };
+    });
+    return {
+      step: this.brain.steps, mode: this.mode, live: this.live, stress: this.stress,
+      clock: this.todToClock(this.tod), tod: +this.tod.toFixed(3), season: this.seasonName(),
+      weather: this.weather.type, weatherInt: +this.weatherIntensity().toFixed(2),
+      lights: {
+        on: this.lightsOn(), clockNight: this.tod < (this.realWx?.sunriseTod ?? 0.26) || this.tod > (this.realWx?.sunsetTod ?? 0.80),
+        sunrise: this.realWx?.sunriseTod != null ? this.todToClock(this.realWx.sunriseTod) : '—',
+        sunset: this.realWx?.sunsetTod != null ? this.todToClock(this.realWx.sunsetTod) : '—',
+        visibility: +this.visibility().toFixed(2), threshold: LIGHT_ON_LUM,
+      },
+      robot: {
+        battery: Math.round(this.robotBattery), charging: this.robot.charging, action: this.robotAction,
+        carryFrac: +this.carryFrac().toFixed(2), stockN, left: +this.robot.left.toFixed(1), top: +this.robot.top.toFixed(1), moving: this.robot.moving,
+      },
+      funds: Math.round(this.ai.funds), cashStrained: this.cashStrained(), lowFunds: LOW_FUNDS,
+      econ: {
+        stock: byCrop(e.stock), stockN, fresh: +e.fresh.toFixed(2), decay: +e.decay.toFixed(3), fee: +e.fee.toFixed(1),
+        wh: byCrop(e.wh), whN, seedStock: e.seedStock, seedMkt: +this.seedMkt.toFixed(2), stockCap: STOCK_CAP,
+      },
+      market: CROP_KEYS.map((k) => ({ k: CROPS[k].name, v: +(this.market[k] || 1).toFixed(2), season: CROP_SEASON[k].includes(this.season()) })),
+      weights: { value: DW_VALUE, urgency: DW_URGENCY, power: DW_POWER, prox: DW_PROX },
+      adaptive: {
+        sellThreshold: +this.ai.sellThreshold.toFixed(2), storeBias: +this.ai.storeBias.toFixed(2), densBias: +this.brain.densBias.toFixed(2),
+        eps: +this.brain.eps.toFixed(3), q: CROP_KEYS.map((k) => ({ k: CROPS[k].name, v: +(this.ai.q[k] || 0).toFixed(2) })),
+      },
+      stats: {
+        trades: this.ai.trades, sells: this.ai.sells, harvests: this.ai.harvests, deaths: this.ai.deaths, plantings: this.ai.plantings,
+        decayLoss: Math.round(this.ai.decayLoss), feesPaid: Math.round(this.ai.feesPaid), idleTaxPaid: Math.round(this.ai.idleTaxPaid),
+        spikeGain: Math.round(this.ai.spikeGain), wear: +this.ai.wear.toFixed(2), fails: this.ai.fails, last: this.ai.last,
+      },
+      decision: this.aiTrace ? { chosen: this.aiTrace.chosen, ranked: this.aiTrace.ranked } : null,
+      plots,
+    };
+  }
   // 应季契合度(0.4..1)：当前季在适播季→1；差 1 季→0.7；差 2 季→0.4
   seasonFit(crop: CropKey): number {
     const s = this.season();
