@@ -386,10 +386,13 @@ export class Field {
     // 接地阴影强度对齐背景：随天气「定向光强度」(晴/晴夜强、阴雨弱)，夜里仅轻微减弱（晴夜有月投影仍强）
     const shadowAlpha = (0.2 + 0.52 * (SHADOW_CLEARNESS[wx] ?? 0.5)) * (0.85 + 0.15 * lum);
     this.lastShadowAlpha = shadowAlpha;
+    shadowLum = lum; // 投影模糊度据环境光选档：越亮越锐(见 getSilShadow / SH_CAST_BLUR)
 
     for (const rec of this.recs) {
       const plot = world.plots[rec.plotId];
       const sl = plot?.slots[rec.slotIdx];
+      // 高密度种植 → 根部接地阴影叠加成黑团 → 按地块株数弱化接地层(株越密越弱，保 SH_DENSITY_FLOOR 下限)
+      const contactK = plot ? Math.max(SH_DENSITY_FLOOR, Math.min(1, Math.sqrt(SH_DENSITY_NORM / Math.max(1, plot.slots.length)))) : 1;
       if (!sl) { hideShadow(rec.shadow); if (rec.kind === 'corn') rec.view.visible = false; else { rec.sprite.visible = false; rec.sprite2.visible = false; } continue; }
       // 收割后空置 / 翻耕 / 出苗期：隐藏作物，露出裸土（收割→翻耕→播种 轮作过程可见）
       const bare = sl.fallowMS > 0 || sl.phase !== 'grow';
@@ -423,7 +426,7 @@ export class Field {
         const partTint = (sl.dead || harvested) ? multiplyColor(relight, cornDeathTint(harvested ? 'dry' : sl.deathKind)) : relight; // 主干/落叶：枯黄干色；活株叶用环境光
         rec.view.update({ stage, upper, frac, heightPx, wither, rotation, baseTint, partTint, dead: sl.dead, harvested });
         // 阴影：玉米主体在 Container 内(局部 0,0)，故用根部世界坐标 view.x/y + 当前主导基底贴图绘制（不随 Container 旋转）
-        applyShadow(rec.shadow, rec.view.baseTex, 0.5, rec.view.baseAnchorY, rec.view.baseScaleX, rec.view.baseScaleY, rec.view.x, rec.view.y, heightPx, Math.abs(rec.view.baseTex.width * rec.view.baseScaleX), shadowAlpha * 0.72);
+        applyShadow(rec.shadow, rec.view.baseTex, 0.5, rec.view.baseAnchorY, rec.view.baseScaleX, rec.view.baseScaleY, rec.view.x, rec.view.y, heightPx, Math.abs(rec.view.baseTex.width * rec.view.baseScaleX), shadowAlpha * 0.72, contactK);
         continue;
       }
 
@@ -474,7 +477,7 @@ export class Field {
       // 上层(下一阶段)仅在每阶段最后 30% 才淡入 → 其余 70% 完全只显当前阶段(不透明)，
       // 消除"整株半透明"观感（此前 alpha=frac 让上层贴图常年半透叠在下层上，露出背景而发虚）。
       b.alpha = stage >= 4 ? 0 : Math.max(0, (frac - 0.7) / 0.3);
-      setShadow(rec.shadow, a, heightPx, a.texture.width * a.scale.x, shadowAlpha * 0.72); // 作物接地阴影（剪影优先、远小株回退彗星团）
+      setShadow(rec.shadow, a, heightPx, a.texture.width * a.scale.x, shadowAlpha * 0.72, contactK); // 作物接地阴影（剪影优先、远小株回退彗星团；高密度根部弱化）
     }
 
     // —— 杂草：按地块 weedProg 逐株出现(蔓延)，按生长进度换阶段贴图(幼→中→熟)并连续长高；跟随昼夜明暗 ——
@@ -598,6 +601,12 @@ const SH_CAST_FLATTEN = 0.50; // 纵向压扁(控制投射长度)
 const SH_CAST_WIDEN = 1.05;   // 横向略加宽(防细条)
 const SH_CAST_SKEW = 0.40;    // 切变(rad)：躺向地面、与 SH_ANGLE 同向(右下)、不随昼夜转
 const SH_CAST_ALPHA = 0.55;   // 投射层比接地层浅
+// 投射剪影模糊度：按环境光分 3 档(暗/中/亮) → 越亮越锐(硬光锐影、漫射软影)；整体已大幅下调(原 0.035 → 0.010~0.022 不再糊)
+const SH_CAST_BLUR = [0.022, 0.015, 0.010] as const; // [暗, 中, 亮] 模糊占贴图宽比例
+// 高密度种植(如小麦密植)根部接地阴影叠加成黑团 → 按密度弱化接地层 alpha，避免"作物悬浮在黑色上"
+const SH_DENSITY_NORM = 24;   // "正常密度"基准(株/地块)：高于此启用根部投影弱化
+const SH_DENSITY_FLOOR = 0.20; // 弱化下限(再密接地层也保留 20% → 仍有接地感、不全黑)；小麦(~400株/块) contactK≈0.24
+let shadowLum = 1;            // 当前环境光(0夜..1正午)：field.update 每帧设；投影模糊度据此选档
 // 共享彗星团贴图 + 接地层贴图(模块级，程序生成、永不失败)；在 Field 构造里赋值。
 let SHADOW_BLOB: Texture;
 let SH_CONTACT_TEX: Texture;
@@ -622,11 +631,14 @@ function hideShadow(sh: ShadowRec) { sh.contact.visible = false; sh.cast.visible
 // 真实接地软影应「填实」：先膨胀闭合叶间空隙 → 模糊软边 → 染平深色，只留外轮廓。
 let shadowRenderer: Renderer | null = null;
 export function setShadowRenderer(r: Renderer) { shadowRenderer = r; } // main.ts 在 app 初始化后调用一次
-const silShadowCache = new Map<Texture, Texture>();
-export function clearSilShadowCache() { for (const t of silShadowCache.values()) { try { t.destroy(true); } catch { /* ignore */ } } silShadowCache.clear(); }
+// 按 [源贴图 → 各光照档烤图] 缓存：每 crop_stage × 每光照档只烤一次（≤3 档 → 全场仍只几十~百来张小图）
+const silShadowCache = new Map<Texture, Texture[]>();
+export function clearSilShadowCache() { for (const arr of silShadowCache.values()) for (const t of arr) { try { t?.destroy(true); } catch { /* ignore */ } } silShadowCache.clear(); }
+function silBlurBucket(lum: number): number { return lum > 0.66 ? 2 : lum > 0.33 ? 1 : 0; } // 亮→2(锐)/中→1/暗→0(软)
 function getSilShadow(srcTex: Texture): Texture | null {
-  const hit = silShadowCache.get(srcTex);
-  if (hit) return hit;
+  const bucket = silBlurBucket(shadowLum);
+  const arr = silShadowCache.get(srcTex);
+  if (arr && arr[bucket]) return arr[bucket];
   if (!shadowRenderer) return null; // 渲染器未就绪 → 走彗星团兜底
   try {
     // 用 extract 取该帧像素（兼容 atlas/RenderTexture/预制图集 等所有来源，无需各自判断 .resource）
@@ -645,9 +657,9 @@ function getSilShadow(srcTex: Texture): Texture | null {
     for (let i = 0; i < STEPS; i++) { const a = (i / STEPS) * Math.PI * 2; ctx.drawImage(baseCv, 0, 0, bw, bh, Math.cos(a) * R, Math.sin(a) * R, sw, shh); }
     ctx.globalAlpha = 1;
     ctx.drawImage(baseCv, 0, 0, bw, bh, 0, 0, sw, shh); // 中心补一张
-    // (2) 模糊软边（收小 blur 留住外形；Safari 老版无 ctx.filter → 跳过，只膨胀+染色，边略硬但不散丝）
+    // (2) 模糊软边（模糊度按光照档 SH_CAST_BLUR[bucket]：越亮越锐；整体已大幅下调不再糊。Safari 老版无 ctx.filter → 跳过）
     if ('filter' in ctx) {
-      const blurPx = Math.max(1, Math.round(sw * 0.035));
+      const blurPx = Math.max(1, Math.round(sw * SH_CAST_BLUR[bucket]));
       const t2 = document.createElement('canvas'); t2.width = sw; t2.height = shh;
       const tctx = t2.getContext('2d');
       if (tctx) { tctx.drawImage(cv, 0, 0); ctx.clearRect(0, 0, sw, shh); ctx.filter = `blur(${blurPx}px)`; ctx.drawImage(t2, 0, 0); ctx.filter = 'none'; }
@@ -664,7 +676,7 @@ function getSilShadow(srcTex: Texture): Texture | null {
     ctx.fillRect(0, 0, sw, shh);
     ctx.globalCompositeOperation = 'source-over';
     const tex = Texture.from(cv);
-    silShadowCache.set(srcTex, tex);
+    const slot = arr || []; slot[bucket] = tex; silShadowCache.set(srcTex, slot);
     return tex;
   } catch { return null; } // 任何失败 → null → 调用方走彗星团 fallback，绝不崩
 }
@@ -695,9 +707,9 @@ function makeShadowTexture(): Texture {
 //  · 投射层：近/大株用预烤填实剪影(竖向翻转投向右下、WIDEN/FLATTEN/SKEW 控形、根深尖淡)；烤制失败→彗星团兜底；
 //    小/远株(<MIN_PX)直接跳过投射层、只留接地层(省+干净，兼作 LOD)。方向固定右下、不随昼夜转，浓度走 alpha。
 // 显式参数版 → 既支持精灵(标准作物/野草)，也支持玉米(主体在 Container 内、用根部世界坐标 worldX/worldY)。
-function applyShadow(sh: ShadowRec, tex: Texture, anchorX: number, anchorY: number, scaleX: number, scaleY: number, worldX: number, worldY: number, hPx: number, renderW: number, alpha: number) {
+function applyShadow(sh: ShadowRec, tex: Texture, anchorX: number, anchorY: number, scaleX: number, scaleY: number, worldX: number, worldY: number, hPx: number, renderW: number, alpha: number, contactK = 1) {
   const footW = Math.max(6, Math.abs(renderW));
-  // —— 接地层 ——（居中盖根、压扁、最深；始终绘制）
+  // —— 接地层 ——（居中盖根、压扁、最深；始终绘制）。contactK<1=高密度弱化(防根部叠成黑团)
   const c = sh.contact;
   c.visible = true;
   if (c.texture !== SH_CONTACT_TEX) c.texture = SH_CONTACT_TEX;
@@ -705,7 +717,7 @@ function applyShadow(sh: ShadowRec, tex: Texture, anchorX: number, anchorY: numb
   c.rotation = 0; c.skew.x = 0;
   c.scale.set((footW * SH_CONTACT_W) / 96, (footW * SH_CONTACT_W * SH_CONTACT_SQUASH) / 96);
   c.tint = SH_TINT;
-  c.alpha = alpha * SH_CONTACT_ALPHA;
+  c.alpha = alpha * SH_CONTACT_ALPHA * contactK;
 
   // —— 投射层 ——（大株才画；剪影优先、失败→彗星团；小株 null → 隐藏）
   const ca = sh.cast;
@@ -720,7 +732,7 @@ function applyShadow(sh: ShadowRec, tex: Texture, anchorX: number, anchorY: numb
     // 负 scale.y 翻转 → 投向右下地面；÷DS 抵消烤图降采样；WIDEN 防细条、FLATTEN 控长
     ca.scale.set((scaleX / SH_SIL_DS) * SH_CAST_WIDEN, -(Math.abs(scaleY) / SH_SIL_DS) * SH_CAST_FLATTEN);
     ca.tint = 0xffffff;              // 色(含根深尖淡)已烤进贴图
-    ca.alpha = alpha * SH_CAST_ALPHA;
+    ca.alpha = alpha * SH_CAST_ALPHA * (0.4 + 0.6 * contactK); // 高密度时投射层也轻度弱化(比接地层缓)
   } else { // 彗星团兜底（接地层照常 → 即便退化也不悬浮）
     if (ca.texture !== SHADOW_BLOB) ca.texture = SHADOW_BLOB;
     ca.anchor.set(SH_ANCHOR_X, 0.5);
@@ -731,12 +743,12 @@ function applyShadow(sh: ShadowRec, tex: Texture, anchorX: number, anchorY: numb
     const wid = Math.max(foot * SH_WID, len * 0.34);
     ca.rotation = SH_ANGLE;
     ca.scale.set(len / SH_TEX_W, wid / SH_TEX_H);
-    ca.alpha = alpha * SH_CAST_ALPHA;
+    ca.alpha = alpha * SH_CAST_ALPHA * (0.4 + 0.6 * contactK);
   }
 }
-// 精灵版（标准作物/野草）：从精灵自身世界坐标 + 贴图/锚点/缩放取参，转交 applyShadow。
-function setShadow(sh: ShadowRec, src: Sprite, hPx: number, renderW: number, alpha: number) {
-  applyShadow(sh, src.texture, src.anchor.x, src.anchor.y, src.scale.x, src.scale.y, src.x, src.y, hPx, renderW, alpha);
+// 精灵版（标准作物/野草）：从精灵自身世界坐标 + 贴图/锚点/缩放取参，转交 applyShadow。contactK<1=高密度根部弱化。
+function setShadow(sh: ShadowRec, src: Sprite, hPx: number, renderW: number, alpha: number, contactK = 1) {
+  applyShadow(sh, src.texture, src.anchor.x, src.anchor.y, src.scale.x, src.scale.y, src.x, src.y, hPx, renderW, alpha, contactK);
 }
 function smooth01(t: number): number { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
 // 渲染一株野草：连续平滑爬升生长 + 强化双 Sprite 过渡 + 枯萎转枯褐/缩/倒 + 接地阴影。两株贴图按 relH 归一(换阶段不跳大小)。
