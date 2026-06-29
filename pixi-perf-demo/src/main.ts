@@ -1,7 +1,7 @@
 import { Application, Assets, Container, RenderTexture, Sprite, ColorMatrixFilter, BlurFilter, Texture } from 'pixi.js';
 import { STAGE_W, STAGE_H } from './data/baseCorners';
 import { installFitBoard } from './core/stage';
-import { installPresentation } from './core/presentation';
+import { installNaked3D } from './scene/naked3d';
 import { StatsMeter } from './core/stats';
 import { PlantAtlas } from './core/assets';
 import { av } from './core/assetVer';
@@ -38,12 +38,7 @@ async function boot() {
     powerPreference: 'high-performance',
     preference: 'webgl',
   });
-  // 展示模式 3D 倾斜层：包住画布，承载「立体沙盘」透视变换（不碰 fitBoard 的 translate/scale）
-  const depthLayer = document.createElement('div');
-  depthLayer.id = 'fp-depth';
-  depthLayer.style.cssText = 'position:absolute; inset:0; transform-origin:center center;';
-  gameLayer.appendChild(depthLayer);
-  depthLayer.appendChild(app.canvas);
+  gameLayer.appendChild(app.canvas);
   // 清晰度修复：fitBoard 用 CSS scale 把 1280 舞台放大铺满视口，位图画布被放大会糊。
   // 让画布按「实际显示像素」渲染：分辨率 = DPR × 适配缩放（带上限防 4K 过载），随窗口动态调整。
   const DPR = window.devicePixelRatio || 1;
@@ -111,6 +106,11 @@ async function boot() {
       return { ...meta, hasWithered: withered ?? /withered/i.test(files[files.length - 1]), stages: texs.map((t) => t ?? present[present.length - 1]) as Texture[] } as WeedKind;
     }),
   )).filter((x): x is WeedKind => !!x);
+
+  // 裸眼3D破框模式资源：银框 + 两株破框主角(从已注册杂草 kind 取，sizeH 唯一可定位 → 不惧过滤错位)
+  const frameTex = await Assets.load<Texture>(av('assets/newbg/frame.png')).catch(() => null);
+  const heroNp1 = weedKinds.find((k) => k.category === 'field' && k.sizeH === 56); // 酸模
+  const heroNp2 = weedKinds.find((k) => k.category === 'field' && k.sizeH === 24); // 蛇莓
 
   // —— 场景图层 ——
   const background = new Background();
@@ -240,33 +240,33 @@ async function boot() {
     }
   };
   // —— 大屏展示模式（裸眼 3D 近似）：进入时隐藏 HUD、做立体沙盘透视 + 层间视差；退出时恢复 ——
-  // 层间视差：背景(含地面)作固定参考面，作物/天气/粒子等「近层」随视角多位移 → 作物「立起来、浮出地面」的纵深。
-  // 捕获各层基准位移(默认 0)后叠加偏移；env→0 时偏移归零 → 关闭即复位、对游戏零影响。
-  const baseFX = field.view.x, baseFY = field.view.y;
-  const basePX = particles.view.x, basePY = particles.view.y;
-  const baseWX = weatherOverlay.view.x, baseWY = weatherOverlay.view.y;
-  let hidUiForPresent = false;
-  const presentation = installPresentation({
-    depthLayer,
+  // —— 裸眼3D · 破框模式（按 P）：银框 + 左下酸模/右下蛇莓破框主角株，跟随场景实时光影 ——
+  let hidUiForNaked = false;
+  const naked3d = installNaked3D({
+    frameTex: frameTex ?? Texture.WHITE,
+    heroes: [
+      // 左下：酸模(高挺)。压住左/下银边内沿破框扑出，但整株留在外框以内(不被屏幕边缘裁切→不露陷)
+      ...(heroNp1 ? [{ kind: heroNp1, cx: STAGE_W * 0.164, by: STAGE_H * 0.98, heightPx: STAGE_H * 0.56, cycleMs: 52000, phase: 0.34 }] : []),
+      // 右下：蛇莓(矮铺成片)。压住右/下银边内沿，错峰(不同周期+相位)生长
+      ...(heroNp2 ? [{ kind: heroNp2, cx: STAGE_W * 0.81, by: STAGE_H * 0.985, heightPx: STAGE_H * 0.35, cycleMs: 64000, phase: 0.5 }] : []),
+    ],
+    light: () => ({ relight: field.relight, shadowAlpha: field.shadowAlpha }),
     badgeHost: wrap,
-    onEnter: () => { if (!gameHud.isUiHidden) { toggleUi(); hidUiForPresent = true; } },
-    onExit: () => { if (hidUiForPresent) { toggleUi(); hidUiForPresent = false; } },
-    onParallax: (nx, ny) => {
-      // 近层反向位移（视角右移 → 近层左移）。位移量随「景深」递增：作物 < 天气 < 粒子
-      field.view.x = baseFX - nx * 16; field.view.y = baseFY - ny * 7;
-      weatherOverlay.view.x = baseWX - nx * 24; weatherOverlay.view.y = baseWY - ny * 10;
-      particles.view.x = basePX - nx * 30; particles.view.y = basePY - ny * 13;
-    },
+    onEnter: () => { if (!gameHud.isUiHidden) { toggleUi(); hidUiForNaked = true; } },
+    onExit: () => { if (hidUiForNaked) { toggleUi(); hidUiForNaked = false; } },
   });
+  // 银框 + 破框主角层加到 stage 顶（z 序：游戏 → 银框 → 主角株）
+  app.stage.addChild(naked3d.frameLayer);
+  app.stage.addChild(naked3d.heroLayer);
 
-  // 桌面键盘：T=一键隐藏全部 UI；E=单独开关基站 UI；P=大屏展示模式（避开输入框/系统快捷键）
+  // 桌面键盘：T=一键隐藏全部 UI；E=单独开关基站 UI；P=裸眼3D破框模式（避开输入框/系统快捷键）
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return; // 不抢系统快捷键
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     if (e.key === 't' || e.key === 'T') toggleUi();
     else if (e.key === 'e' || e.key === 'E') gameHud.toggleStation();
-    else if (e.key === 'p' || e.key === 'P') presentation.toggle();
+    else if (e.key === 'p' || e.key === 'P') naked3d.toggle();
   });
   // 移动端：三连击屏幕（同一区域内 3 次快速点按 → 与正常分散的游戏点击区分）
   let taps: number[] = []; let tapX = 0; let tapY = 0;
@@ -348,7 +348,7 @@ async function boot() {
     daynight.update(world.tod, world.toggles.dayTint, dtMS);
     particles.update(dtMS);
     gameHud.update(dtMS);
-    presentation.update(dtMS); // 展示模式立体沙盘透视/缓转/指针视差（关闭时早退、零开销）
+    naked3d.update(dtMS); // 裸眼3D破框模式：银框 + 主角株生长动画（关闭时早退、零开销）
 
     // 边缘补全背景：约每 700ms 刷新（节流）
     backdropAcc += dtMS;

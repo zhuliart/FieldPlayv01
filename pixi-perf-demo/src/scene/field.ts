@@ -96,6 +96,7 @@ export class Field {
   private roadNodes: { left: number; top: number }[] = []; // 供野草异地重生时判定 onPath
   private roadEdges: [number, number][] = [];
   private lastShadowAlpha = 0.3; // 当前接地阴影强度（随天气/昼夜），供全量光影冠层投影同步浓度
+  private lastRelight = 0xffffff; // 当前环境色罩染（随天气/昼夜），供裸眼3D破框主角株匹配场景光照
   private actor: Container | null = null; // 机器人机身（放进作物层做深度排序；重建时需保留）
   private plantFx = new Graphics(); // 种植可视化：已种点位标记 + 落点预览光标 + 落定脉冲
   private w: World | null = null;   // 缓存最近 world，供指针事件读取（plant 模式判定/选种/株数）
@@ -184,6 +185,9 @@ export class Field {
   setLightShadows(on: boolean): void { this.shadowLayer.visible = on; }
   /** 当前接地阴影强度(随天气/昼夜)。 */
   get shadowStrength(): number { return this.lastShadowAlpha; }
+  // 裸眼3D破框主角株用：当前环境色罩(relight)与接地阴影强度 → 主角株跟随场景实时光影
+  get relight(): number { return this.lastRelight; }
+  get shadowAlpha(): number { return this.lastShadowAlpha; }
 
   buildHitAreas() {
     this.hitLayer.removeChildren();
@@ -386,6 +390,7 @@ export class Field {
     // 接地阴影强度对齐背景：随天气「定向光强度」(晴/晴夜强、阴雨弱)，夜里仅轻微减弱（晴夜有月投影仍强）
     const shadowAlpha = (0.2 + 0.52 * (SHADOW_CLEARNESS[wx] ?? 0.5)) * (0.85 + 0.15 * lum);
     this.lastShadowAlpha = shadowAlpha;
+    this.lastRelight = relight;
     shadowLum = lum; // 投影模糊度据环境光选档：越亮越锐(见 getSilShadow / SH_CAST_BLUR)
 
     for (const rec of this.recs) {
