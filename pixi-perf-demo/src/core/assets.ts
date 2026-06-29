@@ -26,6 +26,8 @@ export class PlantAtlas {
       if (k === 'corn') continue; // 玉米改用预制 corn_atlas，不再打入运行时图集
       for (let s = 1; s <= 5; s++) out.push(`plant_${k}_s${s}`);
     }
+    // 小麦玉米式枯死/残茬帧：站立枯(dry)/残茬(stubble)/落穗(ear)/落叶(leaf)
+    out.push('plant_wheat_dry', 'plant_wheat_stubble', 'plant_wheat_ear', 'plant_wheat_leaf');
     return out;
   }
 

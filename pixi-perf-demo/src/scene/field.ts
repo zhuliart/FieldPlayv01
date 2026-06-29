@@ -442,6 +442,23 @@ export class Field {
 
       // —— 标准作物（番茄/生菜/辣椒/小麦）：双 Sprite 交叉淡入 ——
       const a = rec.sprite, b = rec.sprite2;
+      // 小麦·残茬（玉米式）：采收/清枯后空置(phase empty) → 露 drystubble 留茬 + ~30% 株落穗/落叶散布，而非裸土
+      if (sl.crop === 'wheat' && bare && sl.phase === 'empty' && !sl.dead) {
+        const matureH = (rec.pdepPct * (PLANT_SIZE.wheat + 0.18 * rec.depth) * rec.sizeJit) / 100 * STAGE_H; // 满生长参考高(残茬据此定矮)
+        const stub = this.atlas.get('plant_wheat_stubble');
+        const stubTint = lerpColor(multiplyColor(relight, rec.colorVar), 0x8c847a, 0.35); // 枯草偏灰
+        a.visible = true; a.texture = stub; a.anchor.set(0.5, 0.994); a.rotation = 0;
+        a.scale.set(matureH / (stub.height || 1)); a.tint = stubTint; a.alpha = 1;
+        const fh = plantHash(rec.plotId, rec.slotIdx, 70);
+        if (fh < 0.3) { // ~30% 株落一片穗/叶(躺地随机角)
+          const ear = fh < 0.15; const ft = this.atlas.get(ear ? 'plant_wheat_ear' : 'plant_wheat_leaf');
+          b.visible = true; b.texture = ft; b.anchor.set(0.5, 0.62);
+          b.scale.set((matureH * (ear ? 0.32 : 0.4)) / (ft.height || 1));
+          b.rotation = (plantHash(rec.plotId, rec.slotIdx, 71) - 0.5) * 2.4; b.tint = stubTint; b.alpha = 1;
+        } else b.visible = false;
+        setShadow(rec.shadow, a, matureH * 0.28, a.texture.width * a.scale.x, shadowAlpha * 0.6, contactK);
+        continue;
+      }
       a.visible = !bare; b.visible = !bare;
       if (bare) { hideShadow(rec.shadow); continue; }
 
@@ -490,6 +507,17 @@ export class Field {
       // 上层(下一阶段)仅在每阶段最后 30% 才淡入 → 其余 70% 完全只显当前阶段(不透明)，
       // 消除"整株半透明"观感（此前 alpha=frac 让上层贴图常年半透叠在下层上，露出背景而发虚）。
       b.alpha = stage >= 4 ? 0 : Math.max(0, (frac - 0.7) / 0.3);
+      // 小麦·站立枯死/过熟（玉米式）：成熟期交叉淡入 dry 真枯图(冻死除外，保留 marture+冷蓝)；不再仅靠 tint 染褐
+      if (sl.crop === 'wheat' && stage >= 4) {
+        let dryW = 0;
+        if (sl.dead && sl.deathKind !== 'frozen') dryW = 1;
+        else if (!sl.dead && sl.growth >= 400 && sl.age > 6) dryW = clamp01((sl.age - 6) / 12);
+        if (dryW > 0.02) {
+          const dryTex = this.atlas.get('plant_wheat_dry');
+          b.texture = dryTex; b.anchor.set(0.5, 0.994); b.scale.set(heightPx / (dryTex.height || 1));
+          b.rotation = rot; b.tint = lerpColor(multiplyColor(relight, rec.colorVar), 0x8c847a, Math.min(0.4, cropGray)); b.alpha = smooth01(dryW); b.visible = true;
+        }
+      }
       setShadow(rec.shadow, a, heightPx, a.texture.width * a.scale.x, shadowAlpha * 0.72, contactK); // 作物接地阴影（剪影优先、远小株回退彗星团；高密度根部弱化）
     }
 

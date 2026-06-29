@@ -107,10 +107,12 @@ async function boot() {
     }),
   )).filter((x): x is WeedKind => !!x);
 
-  // 裸眼3D破框模式资源：银框 + 两株破框主角(从已注册杂草 kind 取，sizeH 唯一可定位 → 不惧过滤错位)
-  const frameTex = await Assets.load<Texture>(av('assets/newbg/frame.png')).catch(() => null);
-  const heroNp1 = weedKinds.find((k) => k.category === 'field' && k.sizeH === 56); // 酸模
-  const heroNp2 = weedKinds.find((k) => k.category === 'field' && k.sizeH === 24); // 蛇莓
+  // 裸眼3D破框模式资源：透明银框 + 两株专用静态破框植株(酸模/蛇莓，与示范图一致)
+  const [frameTex, heroTex1, heroTex2] = await Promise.all([
+    Assets.load<Texture>(av('assets/newbg/frame.png')).catch(() => null),
+    Assets.load<Texture>(av('assets/newbg/frame_out_plant1.png')).catch(() => null),
+    Assets.load<Texture>(av('assets/newbg/frame_out_plant2.png')).catch(() => null),
+  ]);
 
   // —— 场景图层 ——
   const background = new Background();
@@ -245,10 +247,10 @@ async function boot() {
   const naked3d = installNaked3D({
     frameTex: frameTex ?? Texture.WHITE,
     heroes: [
-      // 左下：酸模(高挺)。压住左/下银边内沿破框扑出，但整株留在外框以内(不被屏幕边缘裁切→不露陷)
-      ...(heroNp1 ? [{ kind: heroNp1, cx: STAGE_W * 0.164, by: STAGE_H * 0.98, heightPx: STAGE_H * 0.56, cycleMs: 52000, phase: 0.34 }] : []),
-      // 右下：蛇莓(矮铺成片)。压住右/下银边内沿，错峰(不同周期+相位)生长
-      ...(heroNp2 ? [{ kind: heroNp2, cx: STAGE_W * 0.81, by: STAGE_H * 0.985, heightPx: STAGE_H * 0.35, cycleMs: 64000, phase: 0.5 }] : []),
+      // 左下：酸模。推到左下角、根沉到框底外 → 叶片明显探出左/下银边「出框」(非缩在框内)
+      ...(heroTex1 ? [{ tex: heroTex1, cx: STAGE_W * 0.115, by: STAGE_H * 1.02, heightPx: STAGE_H * 0.46, windPhase: 0.0 }] : []),
+      // 右下：蛇莓(宽低)。推到右下角破框，随风错峰
+      ...(heroTex2 ? [{ tex: heroTex2, cx: STAGE_W * 0.865, by: STAGE_H * 1.02, heightPx: STAGE_H * 0.30, windPhase: 2.1 }] : []),
     ],
     light: () => ({ relight: field.relight, shadowAlpha: field.shadowAlpha }),
     badgeHost: wrap,
