@@ -1,6 +1,7 @@
 import { Application, Assets, Container, RenderTexture, Sprite, ColorMatrixFilter, BlurFilter, Texture } from 'pixi.js';
 import { STAGE_W, STAGE_H } from './data/baseCorners';
 import { installFitBoard } from './core/stage';
+import { installPresentation } from './core/presentation';
 import { StatsMeter } from './core/stats';
 import { PlantAtlas } from './core/assets';
 import { av } from './core/assetVer';
@@ -37,7 +38,12 @@ async function boot() {
     powerPreference: 'high-performance',
     preference: 'webgl',
   });
-  gameLayer.appendChild(app.canvas);
+  // 展示模式 3D 倾斜层：包住画布，承载「立体沙盘」透视变换（不碰 fitBoard 的 translate/scale）
+  const depthLayer = document.createElement('div');
+  depthLayer.id = 'fp-depth';
+  depthLayer.style.cssText = 'position:absolute; inset:0; transform-origin:center center;';
+  gameLayer.appendChild(depthLayer);
+  depthLayer.appendChild(app.canvas);
   // 清晰度修复：fitBoard 用 CSS scale 把 1280 舞台放大铺满视口，位图画布被放大会糊。
   // 让画布按「实际显示像素」渲染：分辨率 = DPR × 适配缩放（带上限防 4K 过载），随窗口动态调整。
   const DPR = window.devicePixelRatio || 1;
@@ -77,7 +83,7 @@ async function boot() {
   // 每类按阶段顺序加载（阶段数可不同，weed_8 为 4 阶段含开花）；缺某张则用同类已加载贴图兜底，整类全失败则丢弃。
   // 野草登记表：分类(田地/野地/恶性) + 尺寸层级 + 蔓延形态 + 可生长区域。习性按真实生态设定，可调。
   // growSec=野地中长到成熟的秒数（各物种不同→错落生长，不一起长大）。
-  const WEED_DEFS: (Omit<WeedKind, 'stages' | 'hasWithered'> & { files: string[] })[] = [
+  const WEED_DEFS: (Omit<WeedKind, 'stages' | 'hasWithered'> & { files: string[]; withered?: boolean })[] = [
     // 毛茛：田地类，喜水成片（rule4）
     { files: ['weed_8_baby', 'weed_8_grow', 'weed_8_flower', 'weed_8_mature'], category: 'field', sizeH: 42, growSec: 75, spread: 'patch', inField: true, inWild: true, onRoad: false, nearWater: true },
     { files: ['weed_9_baby', 'weed_9_grow', 'weed_9_mature'], category: 'wild', sizeH: 34, growSec: 95, spread: 'mix', inField: false, inWild: true, onRoad: false, nearWater: false },
@@ -90,14 +96,19 @@ async function boot() {
     { files: ['weed_plantain_baby', 'weed_plantain_grow', 'weed_plantain_flower', 'weed_plantain_withered'], category: 'wild', sizeH: 36, growSec: 120, spread: 'single', inField: false, inWild: false, onRoad: true, nearWater: false },
     // Yellow Dock：恶性类，最大≈番茄成熟期（rule8）；田/路/野皆可、快蔓延、抢营养、毁路（rule3）
     { files: ['weed_yellowdock_baby', 'weed_yellowdock_grow', 'weed_yellowdock_flower', 'weed_yellowdock_withered'], category: 'malignant', sizeH: 60, growSec: 90, spread: 'patch', inField: true, inWild: true, onRoad: true, nearWater: false },
+    // —— 用户新增写实植物（已归一化 normplant.py → assets/newbg/np{1,2}_*）：4 生长帧(baby→young→before-flower→flower) + dry 枯萎帧 ——
+    // 植物① 酸模(高挺单株)：田/野，单株或混生
+    { files: ['newbg/np1_0', 'newbg/np1_1', 'newbg/np1_2', 'newbg/np1_3', 'newbg/np1_4'], withered: true, category: 'field', sizeH: 56, growSec: 105, spread: 'mix', inField: true, inWild: true, onRoad: false, nearWater: false },
+    // 植物② 蛇莓(矮铺成片，黄花红果)：田/野/路，匍匐簇生
+    { files: ['newbg/np2_0', 'newbg/np2_1', 'newbg/np2_2', 'newbg/np2_3', 'newbg/np2_4'], withered: true, category: 'field', sizeH: 24, growSec: 140, spread: 'patch', inField: true, inWild: true, onRoad: true, nearWater: false },
   ];
   const weedKinds = (await Promise.all(
     WEED_DEFS.map(async (def) => {
       const texs = await Promise.all(def.files.map((f) => Assets.load<Texture>(av(`assets/${f}.png`)).catch(() => null)));
       const present = texs.filter((t): t is Texture => !!t);
       if (present.length === 0) return null;
-      const { files, ...meta } = def;
-      return { ...meta, hasWithered: /withered/i.test(files[files.length - 1]), stages: texs.map((t) => t ?? present[present.length - 1]) as Texture[] } as WeedKind;
+      const { files, withered, ...meta } = def;
+      return { ...meta, hasWithered: withered ?? /withered/i.test(files[files.length - 1]), stages: texs.map((t) => t ?? present[present.length - 1]) as Texture[] } as WeedKind;
     }),
   )).filter((x): x is WeedKind => !!x);
 
@@ -228,13 +239,34 @@ async function boot() {
       setTimeout(() => { if (hideHint === hint) { hint.remove(); hideHint = null; } }, 1950);
     }
   };
-  // 桌面键盘：T=一键隐藏全部 UI；E=单独开关基站 UI（避开输入框/系统快捷键）
+  // —— 大屏展示模式（裸眼 3D 近似）：进入时隐藏 HUD、做立体沙盘透视 + 层间视差；退出时恢复 ——
+  // 层间视差：背景(含地面)作固定参考面，作物/天气/粒子等「近层」随视角多位移 → 作物「立起来、浮出地面」的纵深。
+  // 捕获各层基准位移(默认 0)后叠加偏移；env→0 时偏移归零 → 关闭即复位、对游戏零影响。
+  const baseFX = field.view.x, baseFY = field.view.y;
+  const basePX = particles.view.x, basePY = particles.view.y;
+  const baseWX = weatherOverlay.view.x, baseWY = weatherOverlay.view.y;
+  let hidUiForPresent = false;
+  const presentation = installPresentation({
+    depthLayer,
+    badgeHost: wrap,
+    onEnter: () => { if (!gameHud.isUiHidden) { toggleUi(); hidUiForPresent = true; } },
+    onExit: () => { if (hidUiForPresent) { toggleUi(); hidUiForPresent = false; } },
+    onParallax: (nx, ny) => {
+      // 近层反向位移（视角右移 → 近层左移）。位移量随「景深」递增：作物 < 天气 < 粒子
+      field.view.x = baseFX - nx * 16; field.view.y = baseFY - ny * 7;
+      weatherOverlay.view.x = baseWX - nx * 24; weatherOverlay.view.y = baseWY - ny * 10;
+      particles.view.x = basePX - nx * 30; particles.view.y = basePY - ny * 13;
+    },
+  });
+
+  // 桌面键盘：T=一键隐藏全部 UI；E=单独开关基站 UI；P=大屏展示模式（避开输入框/系统快捷键）
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return; // 不抢系统快捷键
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     if (e.key === 't' || e.key === 'T') toggleUi();
     else if (e.key === 'e' || e.key === 'E') gameHud.toggleStation();
+    else if (e.key === 'p' || e.key === 'P') presentation.toggle();
   });
   // 移动端：三连击屏幕（同一区域内 3 次快速点按 → 与正常分散的游戏点击区分）
   let taps: number[] = []; let tapX = 0; let tapY = 0;
@@ -316,6 +348,7 @@ async function boot() {
     daynight.update(world.tod, world.toggles.dayTint, dtMS);
     particles.update(dtMS);
     gameHud.update(dtMS);
+    presentation.update(dtMS); // 展示模式立体沙盘透视/缓转/指针视差（关闭时早退、零开销）
 
     // 边缘补全背景：约每 700ms 刷新（节流）
     backdropAcc += dtMS;
