@@ -399,27 +399,29 @@ export class Field {
       const upper = Math.min(4, stage + 1);
       const gScale = 0.4 + 0.6 * (growthCont / 4); // 近大远小 + 随生长连续平滑变大（高度连续）
 
-      // —— 玉米：预制图集视图（5 阶段完整图 + 衰老叶/主干模块）——
+      // —— 玉米：预制图集视图（5 阶段完整图 + 衰老叶；采收后转残茬：主干+落叶）——
       if (rec.kind === 'corn') {
-        if (bare) { rec.view.visible = false; hideShadow(rec.shadow); continue; }
+        // 残茬态：收割/清枯后空置(phase==='empty')→ 露枯萎主干 + 落叶满地；其余 bare(翻耕/出苗)仍隐藏露裸土
+        const harvested = sl.phase === 'empty' && !sl.dead;
+        if (bare && !harvested) { rec.view.visible = false; hideShadow(rec.shadow); continue; }
         rec.view.visible = true;
         const sizeBase = PLANT_SIZE.corn ?? PLANT_SIZE_DEFAULT;
-        const wither = cornWither(sl, wx, stage); // 由 Slot 真实状态统一计算（不脱节）
-        // 高度修正（用户实测「幼苗期太高、枯萎主干太高」）：
-        //  ① 幼苗期(growthCont→0)→ ×0.05（再缩到原来的 10%，刚出苗极矮小），随出苗(≥1)平滑长到 ×1；
-        //  ② 枯萎主干随其渐显(stemBlend，对齐 cornPlant STEM_START0.55/STEM_FULL0.86)渐缩到 ×0.5。
+        const wither = harvested ? 1 : cornWither(sl, wx, stage); // 残茬按全枯算(枯萎主干+全落叶)
+        // 高度：① 幼苗期(growthCont→0)×0.05 平滑长到 ×1；② 残茬主干 ×0.5（对齐原枯萎主干高度，用户要求保持一致）。
+        //  枯萎(站立)期不再压低 → 保持完整株高(枯萎=正常株型+枯黄+枯叶，非变矮的秃秆)。
         const seedK = 0.05 + 0.95 * Math.min(1, growthCont);
-        const stemBlend = clamp01((wither - 0.55) / (0.86 - 0.55));
-        const witherK = 1 - 0.5 * stemBlend;
+        const stubbleK = harvested ? 0.5 : 1;
         const hPct = rec.pdepPct * (sizeBase + 0.18 * rec.depth) * rec.sizeJit * gScale;
-        const heightPx = (hPct / 100) * STAGE_H * CORN_HEIGHT_K * seedK * witherK;
-        const bend = computeBend(sl, wx, stage); // 与标准作物同一套倒伏机制
+        const heightPx = (hPct / 100) * STAGE_H * CORN_HEIGHT_K * seedK * stubbleK;
+        const bend = harvested ? 0 : computeBend(sl, wx, stage); // 残茬不再倒伏（已是切株）；其余同标准倒伏
         const durMS = (0.85 + rec.r4 * 1.9) * 1000;
         rec.curLodge += (computeLodgeTarget(bend, rec.r1, rec.r2, rec.r3, sl.dead) - rec.curLodge) * Math.min(1, dtMS / durMS);
         const rotation = ((rec.restAng + rec.curLodge) * Math.PI) / 180;
-        const baseTint = sl.dead ? multiplyColor(relight, deathTintOf(sl.deathKind)) : multiplyColor(multiplyColor(relight, cornStress(sl, wx, stage)), rec.colorVar);
-        const partTint = sl.dead ? multiplyColor(relight, cornDeathTint(sl.deathKind)) : relight; // 主干/叶：环境光（死亡仅轻度色偏，干叶贴图本就枯黄，勿用深褐 deathTintOf 二次压黑）
-        rec.view.update({ stage, upper, frac, heightPx, wither, rotation, baseTint, partTint, dead: sl.dead });
+        // 枯黄化：随 wither 把整株(阶段图)渐染枯黄 → 枯萎=正常株逐渐黄化；死亡用死亡色
+        const ageY = lerpColor(0xffffff, 0xcaa658, clamp01(wither) * 0.8);
+        const baseTint = sl.dead ? multiplyColor(relight, deathTintOf(sl.deathKind)) : multiplyColor(multiplyColor(multiplyColor(relight, cornStress(sl, wx, stage)), ageY), rec.colorVar);
+        const partTint = (sl.dead || harvested) ? multiplyColor(relight, cornDeathTint(harvested ? 'dry' : sl.deathKind)) : relight; // 主干/落叶：枯黄干色；活株叶用环境光
+        rec.view.update({ stage, upper, frac, heightPx, wither, rotation, baseTint, partTint, dead: sl.dead, harvested });
         // 阴影：玉米主体在 Container 内(局部 0,0)，故用根部世界坐标 view.x/y + 当前主导基底贴图绘制（不随 Container 旋转）
         applyShadow(rec.shadow, rec.view.baseTex, 0.5, rec.view.baseAnchorY, rec.view.baseScaleX, rec.view.baseScaleY, rec.view.x, rec.view.y, heightPx, Math.abs(rec.view.baseTex.width * rec.view.baseScaleX), shadowAlpha * 0.72);
         continue;

@@ -12,9 +12,7 @@ import type { PlantAtlas } from '../core/assets';
 // 不注册任何 Ticker/RAF/定时器；全部由 Field.update() 驱动。阴影由 Field 读取 base* 几何后单独绘制。
 // ============================================================================
 
-const WITHER_AGING = 0.18; // 低于此：纯阶段图（健康），不叠加衰老叶
-const STEM_START = 0.55;    // 枯萎到此开始把阶段图交叉淡出为主干
-const STEM_FULL = 0.86;     // 到此主干完全取代阶段图
+const WITHER_AGING = 0.18; // 低于此：纯阶段图（健康），不叠加衰老叶（枯萎只染色+叠叶，主干仅残茬态露出）
 const MAX_LEAVES = 6;       // 叠加叶片硬上限（性能 + 「保留 3~6 片」）
 const LEAF_SCALE = 0.74;    // 叠加叶片相对株高的缩放（图集叶片偏大，缩一点更贴合主体、不过度铺张）
 // 各叶帧「长度归一化」基准（像素，取健康/黄叶平均最长边≈410）：干枯/卷曲叶帧本身比健康/黄叶
@@ -37,8 +35,6 @@ function leafTypeScale(frame: string): number {
   if (frame.includes('curled')) return LEAF_TYPE_SCALE.curled;
   return LEAF_TYPE_SCALE.healthy;
 }
-
-const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 // 按衰老类型 + 挂点朝向挑具体帧。healthy/yellow 的 01/03 锚点已编码左右朝向(无需翻转)，02 与 dry/curled 居中竖叶按 side 镜像。
 function pickLeafFrame(type: 'healthy' | 'yellow' | 'dry' | 'curled', side: CornAttachmentSide, roll: number): { frame: string; flip: boolean } {
@@ -67,9 +63,10 @@ export interface CornUpdate {
   heightPx: number;// 目标显示株高
   wither: number;  // 衰老/枯萎强度 0..1（由 Field 据 Slot 状态统一计算）
   rotation: number;// 整株旋转(休止角+倒伏，rad)
-  baseTint: number;// 阶段图色（环境光×个体色×轻应激）
+  baseTint: number;// 阶段图色（环境光×个体色×轻应激×枯黄化）
   partTint: number;// 主干/叶片色（环境光×死亡色；不强行染黄已是黄/干的叶）
   dead: boolean;
+  harvested: boolean; // 采收/清枯后空置 = 残茬态：露枯萎主干 + 落叶满地；否则(含枯萎)始终显完整植株
 }
 
 interface LeafEntry { ai: number; frame: string; flipX: boolean; sJit: number; wJit: number; lenJit: number; rJit: number; droopK: number; chaos: number;
@@ -104,7 +101,10 @@ export class CornPlantView extends Container {
 
   update(p: CornUpdate): void {
     this.rotation = p.rotation;
-    const stemBlend = clamp01((p.wither - STEM_START) / (STEM_FULL - STEM_START));
+    // 关键改动：主干只在「采收/清枯后的残茬态」露出，不再随枯萎程度渐显。
+    //  · 生长 / 枯萎：stemBlend=0 → 始终显完整阶段图(baseA)，枯萎靠 baseTint 枯黄化 + 叠加黄/干/卷叶(挂在株上)。
+    //  · 残茬(harvested)：stemBlend=1 → 露枯萎主干(baseB)，枯叶/卷叶落地散布(applyLeaves 的 fallen 分支)。
+    const stemBlend = p.harvested ? 1 : 0;
 
     // —— 基底 A：当前阶段图（枯萎态随 stemBlend 淡出）——
     const aFrame = CORN_FRAMES.stages[Math.min(4, p.stage)];
