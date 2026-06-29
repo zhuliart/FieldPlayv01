@@ -12,8 +12,8 @@ import { STAGE_W, STAGE_H } from '../data/baseCorners';
 //       三者互不冲突（缩放需两指、平移/操作单指）。缩放范围 [ZOOM_MIN, ZOOM_MAX]。
 export function installFitBoard(root: HTMLElement, gameLayer: HTMLElement, onScale?: (scale: number) => void): () => void {
   const ZOOM_MIN = 1, ZOOM_MAX = 3; // 1=贴合(复原)；上限 3×（手机看细节足够、又不至于过糊/过载）
-  // 拉伸铺满：横纵各自缩放铺满视口（非等比）→ 无黑边/无白边，但画面会随视口比例轻微变形。
-  // bsX/bsY 分轴 → 平移/缩放/触摸坐标换算全部按轴处理，避免拉伸后落点错位。
+  // 等比缩放(contain)：bsX==bsY → 不变形、保留等比农田透视(作物准确归位)；非 16:9 留边由 #fp-backdrop 边缘补全。
+  // 仍保留 bsX/bsY 分轴写法(当前恒相等)→ 平移/缩放/触摸坐标按轴自洽；若日后再试拉伸只需让二者不等。
   let bsX = 1, bsY = 1;
   let zoom = 1; // 1=贴合；>1=放大
   let panX = 0, panY = 0; // 屏幕像素平移（叠加在居中之上）
@@ -46,7 +46,7 @@ export function installFitBoard(root: HTMLElement, gameLayer: HTMLElement, onSca
   const apply = () => {
     const { W, H } = viewport();
     if (!W || !H) return;
-    bsX = W / STAGE_W; bsY = H / STAGE_H; // 拉伸铺满：横纵各自缩放（非等比，无黑边）
+    bsX = bsY = Math.min(W / STAGE_W, H / STAGE_H); // 等比缩放(contain)：不变形、保留等比农田透视 → 作物准确归位；非 16:9 留边由 #fp-backdrop 边缘补全
     root.style.transform = `scale(${bsX.toFixed(4)}, ${bsY.toFixed(4)})`;
     clampPan();
     applyGame();

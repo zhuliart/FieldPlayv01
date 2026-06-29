@@ -106,6 +106,8 @@
   <body>
     <div id="fp-boot">铁娃子果蔬园 · 加载中…</div>
     <div id="fp-wrap">
+      <!-- 边缘补全：取场景边缘色铺成渐变填满黑边区域(由 main.ts 节流刷新) → 留白=画面边缘的自然延伸、随昼夜变 -->
+      <div id="fp-backdrop"></div>
       <div id="fp-root"></div>
     </div>
     <!-- 竖屏提示（非阻断）：手机竖屏时由 stage.ts fitBoard 显示，旋转到横屏自动消失 -->
