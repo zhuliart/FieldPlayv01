@@ -6,7 +6,7 @@ import { PlantAtlas } from './core/assets';
 import { av } from './core/assetVer';
 import { World } from './sim/world';
 import { Background } from './scene/background';
-import { Field, type WeedKind } from './scene/field';
+import { Field, setShadowRenderer, type WeedKind } from './scene/field';
 import { Robot } from './scene/robot';
 import { DayNight } from './scene/daynight';
 import { WeatherOverlay } from './scene/weather';
@@ -112,6 +112,7 @@ async function boot() {
   });
   field.buildHitAreas();
   field.rebuild(world);
+  setShadowRenderer(app.renderer); // 供阴影系统用 extract 烤「填实软影」贴图（按 crop_stage 缓存）
   const robot = new Robot();
   // 车灯严格还原：color-dodge 强提亮（在黑暗中照亮地面/作物），而非 screen 的白团叠加
   if (colorDodgeReady) robot.setPoolBlend('color-dodge');

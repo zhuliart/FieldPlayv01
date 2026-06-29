@@ -582,12 +582,60 @@ const SH_LEN_H = 0.5;      // 株高→附加长度(高株投影更长)
 // 再压扁(FLATTEN)铺展、沿固定光向切变(SKEW)躺地。比通用水滴团多了"枝叶形状"，且根部直接拷植株锚点 → 不悬浮。
 const SH_MODE: 'silhouette' | 'blob' = 'silhouette'; // 总开关；'blob' 一键回退到上面的彗星软团(行为与改动前完全一致)
 const SH_SIL_MIN_PX = 22;     // 株高(px)阈值：低于此用彗星团(远/小株，更便宜) → 兼作 LOD；高于此用剪影
-const SH_SIL_TINT = 0x1c241e; // 平整深色(偏环境冷绿、非纯黑)：乘到植株贴图 → 只留轮廓
-const SH_SIL_FLATTEN = 0.42;  // 纵向压扁系数：控制剪影沿地面铺展的长度(越小越短越贴地)
-const SH_SIL_SKEW = 1.1;      // 切变量(rad)：剪影"躺向"地面的倾斜；落地角 θ≈90°−deg(SKEW)≈27° → 与 SH_ANGLE 同向(右下)、不随昼夜转
-const SH_SIL_ALPHA_K = 0.9;   // 剪影相对 shadowAlpha 的折扣(剪影面积大、略降浓度)
+const SH_SIL_TINT = 0x1c241e; // 平整深色(偏环境冷绿、非纯黑)：烤进阴影贴图、抹掉正面色/细节
+const SH_SIL_FLATTEN = 0.50;  // 纵向压扁系数：控制阴影沿地面铺展的长度(越小越短越贴地)
+const SH_SIL_WIDEN = 1.12;    // 横向略加宽：避免阴影细成条
+const SH_SIL_SKEW = 0.45;     // 切变量(rad)：阴影"躺向"地面的倾斜(略竖、填实)；与 SH_ANGLE 同向(右下)、不随昼夜转
+const SH_SIL_ALPHA_K = 0.85;  // 阴影相对 shadowAlpha 的折扣(面积大、略降浓度)
+const SH_SIL_DS = 0.5;        // 烤制阴影贴图的降采样系数(更便宜，且放大时天然更软)
 // 共享彗星团贴图(模块级)：剪影 LOD 兜底 + SH_MODE='blob' 回退用；在 Field 构造里由 makeShadowTexture() 赋值。
 let SHADOW_BLOB: Texture;
+
+// —— 预烤「膨胀填实 + 模糊」阴影贴图，按源贴图(Texture 引用 = 每作物每阶段唯一)缓存，全场共享、只烤一次 ——
+// 上一版直接拿植株 alpha 当剪影：细叶(玉米/小麦)压扁切变后散成一把斜丝(叶间空隙原样透出)。
+// 真实接地软影应「填实」：先膨胀闭合叶间空隙 → 模糊软边 → 染平深色，只留外轮廓。
+let shadowRenderer: Renderer | null = null;
+export function setShadowRenderer(r: Renderer) { shadowRenderer = r; } // main.ts 在 app 初始化后调用一次
+const silShadowCache = new Map<Texture, Texture>();
+export function clearSilShadowCache() { for (const t of silShadowCache.values()) { try { t.destroy(true); } catch { /* ignore */ } } silShadowCache.clear(); }
+function getSilShadow(srcTex: Texture): Texture | null {
+  const hit = silShadowCache.get(srcTex);
+  if (hit) return hit;
+  if (!shadowRenderer) return null; // 渲染器未就绪 → 走彗星团兜底
+  try {
+    // 用 extract 取该帧像素（兼容 atlas/RenderTexture/预制图集 等所有来源，无需各自判断 .resource）
+    const tmp = new Sprite(srcTex);
+    const baseCv = shadowRenderer.extract.canvas(tmp) as HTMLCanvasElement;
+    try { tmp.destroy(); } catch { /* ignore */ }
+    if (!baseCv || !baseCv.width || !baseCv.height) return null;
+    const sw = Math.max(8, Math.round(srcTex.width * SH_SIL_DS));
+    const shh = Math.max(8, Math.round(srcTex.height * SH_SIL_DS));
+    const cv = document.createElement('canvas'); cv.width = sw; cv.height = shh;
+    const ctx = cv.getContext('2d'); if (!ctx) return null;
+    const bw = baseCv.width, bh = baseCv.height;
+    // (1) 膨胀填实：源帧在一圈小偏移上反复叠绘 → 细叶胀到一起、闭合叶间空隙
+    const R = Math.max(2, Math.round(sw * 0.06)), STEPS = 12;
+    ctx.globalAlpha = 0.6;
+    for (let i = 0; i < STEPS; i++) { const a = (i / STEPS) * Math.PI * 2; ctx.drawImage(baseCv, 0, 0, bw, bh, Math.cos(a) * R, Math.sin(a) * R, sw, shh); }
+    ctx.globalAlpha = 1;
+    ctx.drawImage(baseCv, 0, 0, bw, bh, 0, 0, sw, shh); // 中心补一张
+    // (2) 模糊软边（Safari 老版 canvas 无 ctx.filter → 跳过此步，只膨胀+染色，边略硬但不散丝）
+    if ('filter' in ctx) {
+      const blurPx = Math.max(2, Math.round(sw * 0.09));
+      const t2 = document.createElement('canvas'); t2.width = sw; t2.height = shh;
+      const tctx = t2.getContext('2d');
+      if (tctx) { tctx.drawImage(cv, 0, 0); ctx.clearRect(0, 0, sw, shh); ctx.filter = `blur(${blurPx}px)`; ctx.drawImage(t2, 0, 0); ctx.filter = 'none'; }
+    }
+    // (3) 染平深色：source-in 把已成形的 alpha 团整体替换为单色（抹掉正面颜色/细节）
+    ctx.globalCompositeOperation = 'source-in';
+    ctx.fillStyle = '#' + SH_SIL_TINT.toString(16).padStart(6, '0');
+    ctx.fillRect(0, 0, sw, shh);
+    ctx.globalCompositeOperation = 'source-over';
+    const tex = Texture.from(cv);
+    silShadowCache.set(srcTex, tex);
+    return tex;
+  } catch { return null; } // 任何失败 → null → 调用方走彗星团 fallback，绝不崩
+}
 
 // 彗星软阴影贴图：长轴 128 × 短轴 64；近端(≈22%处)浓团=接地，向远端渐隐成尾=投射。
 function makeShadowTexture(): Texture {
@@ -619,16 +667,17 @@ function makeShadowTexture(): Texture {
 // (主体在 Container 内、局部坐标为 0,0，必须用 Container 的根部世界坐标 worldX/worldY，否则阴影会跑到舞台 (0,0))。
 function applyShadow(sh: Sprite, tex: Texture, anchorX: number, anchorY: number, scaleX: number, scaleY: number, worldX: number, worldY: number, hPx: number, renderW: number, alpha: number) {
   sh.visible = true;
-  const useSil = SH_MODE === 'silhouette' && hPx >= SH_SIL_MIN_PX;
-  if (useSil) {
-    if (sh.texture !== tex) sh.texture = tex; // 换生长阶段/主干时同步贴图，带去重(避免每帧重绑)
+  // 烤好的「填实软影」贴图（按源贴图缓存、只烤一次）；取不到(渲染器未就绪/烤制失败/小远株) → 走彗星团兜底
+  const silTex = (SH_MODE === 'silhouette' && hPx >= SH_SIL_MIN_PX) ? getSilShadow(tex) : null;
+  if (silTex) {
+    if (sh.texture !== silTex) sh.texture = silTex;
     sh.anchor.set(anchorX, anchorY); // 锚点=植株锚点 → 根部严格重合
     sh.position.set(worldX, worldY);
     sh.rotation = 0;                // 不叠加植株休止角/倒伏旋转（否则影子会"站起来"）
-    sh.skew.x = SH_SIL_SKEW;        // 固定光向切变（ObservablePoint 同值自动去重，等同"设一次"）
-    // 竖向翻转(负 scale.y)→ 枝叶投向右下地面；FLATTEN 控制铺展长度；等宽随植株(翻转时跟随 scaleX 正负)
-    sh.scale.set(scaleX, -Math.abs(scaleY) * SH_SIL_FLATTEN);
-    sh.tint = SH_SIL_TINT;
+    sh.skew.x = SH_SIL_SKEW;        // 固定光向切变（同值自动去重）
+    // 竖向翻转(负 scale.y)→ 枝叶投向右下地面；÷DS 抵消烤图降采样；WIDEN 加宽防细条；FLATTEN 控制铺展长度
+    sh.scale.set((scaleX / SH_SIL_DS) * SH_SIL_WIDEN, -(Math.abs(scaleY) / SH_SIL_DS) * SH_SIL_FLATTEN);
+    sh.tint = 0xffffff;             // 颜色已烤进贴图，tint 设白不二次染
     sh.alpha = alpha * SH_SIL_ALPHA_K;
   } else {
     if (sh.texture !== SHADOW_BLOB) sh.texture = SHADOW_BLOB;
