@@ -25,7 +25,7 @@ export interface HeroSpec {
 export interface Naked3DOpts {
   frameTex: Texture;
   heroes: HeroSpec[];
-  light: () => { relight: number; shadowAlpha: number };
+  light: () => { relight: number; shadowAlpha: number; lum: number };
   badgeHost: HTMLElement;
   onEnter?: () => void;
   onExit?: () => void;
@@ -57,6 +57,14 @@ function shadowTex(): Texture {
   SHADOW_TEX = Texture.from(c);
   return SHADOW_TEX;
 }
+
+function lerpColor(a: number, b: number, t: number): number {
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  return ((Math.round(ar + (br - ar) * t)) << 16) | ((Math.round(ag + (bg - ag) * t)) << 8) | Math.round(ab + (bb - ab) * t);
+}
+// 互补顶光色：场景越暗(夜·冷蓝) → 植株越暖(琥珀)；场景越亮(昼·暖白) → 植株越冷。室内展柜射灯感、独立于场景明暗。
+const TOP_COOL = 0xcdd9ff, TOP_WARM = 0xffd0a0;
 
 interface HeroRec { spec: HeroSpec; sprite: Sprite; shadow: Sprite; }
 
@@ -113,7 +121,10 @@ export function installNaked3D(opts: Naked3DOpts): Naked3DHandle {
     frame.alpha = 1; // 框不透明(中间透明=窗口，靠 PNG 自带 alpha；不叠额外透明效果)
     t += dtMS;
 
-    const { relight, shadowAlpha } = light();
+    const { shadowAlpha, lum } = light();
+    // 互补顶光：与画面冷暖相反，恒亮(室内射灯感)。场景冷(夜)→暖；场景暖(昼)→冷。
+    const warmth = Math.max(0, Math.min(1, 1 - lum));
+    const topLight = lerpColor(TOP_COOL, TOP_WARM, warmth);
     for (const r of recs) {
       const ph = r.spec.windPhase;
       // 阵风包络：两条慢正弦相乘 → 多数时间≈0(静息)，偶尔同号叠加成一阵风(确定性、无随机)
@@ -121,7 +132,7 @@ export function installNaked3D(opts: Naked3DOpts): Naked3DHandle {
       const flutter = Math.sin(t / 540 + ph * 3);
       const sway = WIND_AMP * (WIND_CALM + (1 - WIND_CALM) * gust) * flutter;
       r.sprite.rotation = sway;     // 绕根部轻摆(锚点在根 → 不移根)
-      r.sprite.tint = relight;      // 实时环境色罩(白天≈白，夜里转冷)
+      r.sprite.tint = topLight;     // 单独打光：与游戏画面互补的顶光(冷暖相反、恒亮、像展柜射灯)
       r.sprite.alpha = 1;           // 植株不透明
       r.shadow.tint = 0x1c241e;
       r.shadow.alpha = shadowAlpha * 0.9; // 阴影本就半透(随实时光照)，与"植株不透明"无关

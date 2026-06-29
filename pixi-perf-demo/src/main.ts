@@ -247,12 +247,12 @@ async function boot() {
   const naked3d = installNaked3D({
     frameTex: frameTex ?? Texture.WHITE,
     heroes: [
-      // 左下：酸模。推到左下角、根沉到框底外 → 叶片明显探出左/下银边「出框」(非缩在框内)
-      ...(heroTex1 ? [{ tex: heroTex1, cx: STAGE_W * 0.115, by: STAGE_H * 1.02, heightPx: STAGE_H * 0.46, windPhase: 0.0 }] : []),
-      // 右下：蛇莓(宽低)。推到右下角破框，随风错峰
-      ...(heroTex2 ? [{ tex: heroTex2, cx: STAGE_W * 0.865, by: STAGE_H * 1.02, heightPx: STAGE_H * 0.30, windPhase: 2.1 }] : []),
+      // 左下：酸模。再缩小；压住左/下银边内沿破框，但整株(含叶尖)留在画框外边界以内、不裁切
+      ...(heroTex1 ? [{ tex: heroTex1, cx: STAGE_W * 0.118, by: STAGE_H * 0.99, heightPx: STAGE_H * 0.38, windPhase: 0.0 }] : []),
+      // 右下：蛇莓(宽低)。再缩小；压右/下银边内沿破框、整株留外框内，随风错峰
+      ...(heroTex2 ? [{ tex: heroTex2, cx: STAGE_W * 0.862, by: STAGE_H * 0.99, heightPx: STAGE_H * 0.24, windPhase: 2.1 }] : []),
     ],
-    light: () => ({ relight: field.relight, shadowAlpha: field.shadowAlpha }),
+    light: () => ({ relight: field.relight, shadowAlpha: field.shadowAlpha, lum: field.sceneLum }),
     badgeHost: wrap,
     onEnter: () => { if (!gameHud.isUiHidden) { toggleUi(); hidUiForNaked = true; } },
     onExit: () => { if (hidUiForNaked) { toggleUi(); hidUiForNaked = false; } },
