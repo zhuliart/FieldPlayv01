@@ -251,6 +251,30 @@ async function boot() {
 
   document.getElementById('fp-boot')?.remove();
 
+  // —— 黑边「边缘采样补全」：取场景 左右边缘列 在 顶/中/底 的颜色 → 竖向渐变铺满整屏（仅有黑边时启用）——
+  // 用「边缘列」而非中线：中线会扫到移动的绿色田块/机器人 → 侧边黑边出现"动画绿光斑"(用户反馈)；
+  // 边缘列是天空/远山/草地边等稳定景物 → 渐变稳定、与画面边缘同色、随昼夜变。
+  const backdropEl = document.getElementById('fp-backdrop') as HTMLDivElement | null;
+  let backdropAcc = 9999;
+  const updateBackdrop = () => {
+    if (!backdropEl) return;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (Math.abs(vw / vh - STAGE_W / STAGE_H) <= 0.02) { if (backdropEl.style.opacity !== '0') backdropEl.style.opacity = '0'; return; }
+    try {
+      const c = app.renderer.extract.canvas({ target: app.stage, resolution: 0.08 }) as HTMLCanvasElement;
+      const ctx = c.getContext('2d');
+      if (!ctx || !c.width || !c.height) return;
+      const w = c.width, h = c.height, xl = 1, xr = Math.max(1, w - 2);
+      const avg = (f: number) => {
+        const y = Math.max(0, Math.min(h - 1, Math.round(h * f)));
+        const a = ctx.getImageData(xl, y, 1, 1).data, b = ctx.getImageData(xr, y, 1, 1).data;
+        return `rgb(${(a[0] + b[0]) >> 1},${(a[1] + b[1]) >> 1},${(a[2] + b[2]) >> 1})`;
+      };
+      backdropEl.style.background = `linear-gradient(${avg(0.06)} 0%, ${avg(0.5)} 50%, ${avg(0.94)} 100%)`;
+      backdropEl.style.opacity = '1';
+    } catch { /* extract/读像素失败 → 保留 #fp-wrap 渐变兜底 */ }
+  };
+
   // —— 主循环 ——
   let sweepFrame = 0;
   app.ticker.add((ticker) => {
@@ -292,6 +316,10 @@ async function boot() {
     daynight.update(world.tod, world.toggles.dayTint, dtMS);
     particles.update(dtMS);
     gameHud.update(dtMS);
+
+    // 边缘补全背景：约每 700ms 刷新（节流）
+    backdropAcc += dtMS;
+    if (backdropAcc >= 700) { backdropAcc = 0; updateBackdrop(); }
 
     // 仪表读数
     stats.tick(ticker.deltaMS);
