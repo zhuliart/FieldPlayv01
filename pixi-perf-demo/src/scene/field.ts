@@ -420,11 +420,16 @@ export class Field {
         const durMS = (0.85 + rec.r4 * 1.9) * 1000;
         rec.curLodge += (computeLodgeTarget(bend, rec.r1, rec.r2, rec.r3, sl.dead) - rec.curLodge) * Math.min(1, dtMS / durMS);
         const rotation = ((rec.restAng + rec.curLodge) * Math.PI) / 180;
-        // 枯黄化：随 wither 把整株(阶段图)渐染枯黄 → 枯萎=正常株逐渐黄化；死亡用死亡色
-        const ageY = lerpColor(0xffffff, 0xcaa658, clamp01(wither) * 0.8);
-        const baseTint = sl.dead ? multiplyColor(relight, deathTintOf(sl.deathKind)) : multiplyColor(multiplyColor(multiplyColor(relight, cornStress(sl, wx, stage)), ageY), rec.colorVar);
+        // #1 枯黄化(随 wither 渐显)：整株(阶段图)从绿渐染枯黄 → 枯萎=正常株逐渐黄化。
+        //   死亡也走枯黄(冻死除外走冷调)——不再乘深褐 deathTintOf(那会把绿叶压成近黑=用户看到的"黑色叠加")。
+        const frozen = sl.dead && sl.deathKind === 'frozen';
+        let cornBody = frozen ? 0xb9c4d8 : lerpColor(0xffffff, 0xc7a24e, clamp01(wither) * 0.85); // 枯黄渐显(透明度递减)
+        // #2 渐进失色(灰化)：深枯萎(>0.85)起，按每株随机量把色调拉向暖灰 → 久枯渐渐褪色发灰
+        const cornGray = clamp01((wither - 0.85) / 0.15) * (0.25 + 0.5 * plantHash(rec.plotId, rec.slotIdx, 200));
+        cornBody = lerpColor(cornBody, 0x8c847a, cornGray);
+        const baseTint = multiplyColor(multiplyColor(multiplyColor(relight, cornStress(sl, wx, stage)), cornBody), rec.colorVar);
         const partTint = (sl.dead || harvested) ? multiplyColor(relight, cornDeathTint(harvested ? 'dry' : sl.deathKind)) : relight; // 主干/落叶：枯黄干色；活株叶用环境光
-        rec.view.update({ stage, upper, frac, heightPx, wither, rotation, baseTint, partTint, dead: sl.dead, harvested });
+        rec.view.update({ stage, upper, frac, heightPx, wither, rotation, baseTint, partTint, dead: sl.dead, harvested, gray: clamp01((wither - 0.8) / 0.2) });
         // 阴影：玉米主体在 Container 内(局部 0,0)，故用根部世界坐标 view.x/y + 当前主导基底贴图绘制（不随 Container 旋转）
         applyShadow(rec.shadow, rec.view.baseTex, 0.5, rec.view.baseAnchorY, rec.view.baseScaleX, rec.view.baseScaleY, rec.view.x, rec.view.y, heightPx, Math.abs(rec.view.baseTex.width * rec.view.baseScaleX), shadowAlpha * 0.72, contactK);
         continue;
@@ -471,7 +476,10 @@ export class Field {
           stress = lerpColor(stress, 0xd8b84a, Math.min(1, sl.dry / thr) * 0.7);
         }
       }
-      const tint = multiplyColor(multiplyColor(relight, stress), rec.colorVar);
+      let tint = multiplyColor(multiplyColor(relight, stress), rec.colorVar);
+      // #2 久枯渐进失色(灰化)：死亡/过熟越久 → 按每株随机量把色调拉向暖灰
+      const cropGray = (sl.dead ? 0.4 : (sl.growth >= 400 ? clamp01((sl.age - 7) / 12) * 0.45 : 0)) * (0.5 + 0.5 * plantHash(rec.plotId, rec.slotIdx, 200));
+      if (cropGray > 0.01) tint = lerpColor(tint, 0x8c847a, Math.min(0.6, cropGray));
       a.tint = tint; b.tint = tint;
       a.alpha = 1;
       // 上层(下一阶段)仅在每阶段最后 30% 才淡入 → 其余 70% 完全只显当前阶段(不透明)，
@@ -763,7 +771,9 @@ function drawWeed(sp: Sprite, sp2: Sprite, sh: ShadowRec, kind: WeedKind, target
   const plantH = targetH * (0.02 + 0.98 * Math.pow(Lc, 1.15)) * (1 - wither * 0.22);
   if (plantH < 0.6 || fade <= 0.01) { sp.visible = false; sp2.visible = false; hideShadow(sh); return; }
   const rot = ((restAng + lodge) * Math.PI) / 180;
-  const dark = wither > 0 ? lerpColor(0xffffff, 0x7a5f38, Math.min(1, wither) * 0.85) : 0xffffff; // 枯萎转枯褐(枯草色，非近黑)
+  let dark = wither > 0 ? lerpColor(0xffffff, 0x7a5f38, Math.min(1, wither) * 0.85) : 0xffffff; // 枯萎转枯褐(枯草色，非近黑)
+  const wdeep = clamp01((Math.min(1, wither) - 0.6) / 0.4); // #2 久枯(深枯>0.6)渐进失色：枯褐再拉向暖灰
+  if (wdeep > 0) dark = lerpColor(dark, 0x8c847a, wdeep * 0.5);
   const tint = multiplyColor(multiplyColor(relight, colorVar), dark);
 
   let baseStage: number, overStage: number, overAlpha: number, dissolve: boolean;
@@ -845,10 +855,6 @@ function cornStress(sl: Slot, wx: WeatherType, stage: number): number {
     if (wx === 'rain' && sl.flood > 0) return 0xc0cdab;
   }
   return 0xffffff;
-}
-// 死亡色：冻死冷蓝 / 烂根暗橄榄 / 旱·过熟棕褐（与标准作物一致）。
-function deathTintOf(kind: Slot['deathKind']): number {
-  return kind === 'frozen' ? 0x9fb1d0 : kind === 'rot' ? 0x5c6b46 : 0x6f5530;
 }
 // 玉米枯死部件色（仅玉米用）：干叶/枯主干贴图本就是金棕/枯黄（自然玉米秸秆 stover 色），
 // 故只做「轻度」色偏、几乎不压暗——不像标准作物那样用深褐死亡色重染。否则金棕贴图被

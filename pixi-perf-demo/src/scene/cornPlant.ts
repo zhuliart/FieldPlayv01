@@ -29,6 +29,12 @@ const LEAF_TYPE_SCALE: Record<'healthy' | 'yellow' | 'dry' | 'curled', number> =
   dry: 0.35,
   curled: 0.275,
 };
+// 简单颜色 lerp（久枯失色用）：把叶片色拉向暖灰
+function lerpC(a: number, b: number, t: number): number {
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t);
+}
 function leafTypeScale(frame: string): number {
   if (frame.includes('yellow')) return LEAF_TYPE_SCALE.yellow;
   if (frame.includes('dry')) return LEAF_TYPE_SCALE.dry;
@@ -67,6 +73,7 @@ export interface CornUpdate {
   partTint: number;// 主干/叶片色（环境光×死亡色；不强行染黄已是黄/干的叶）
   dead: boolean;
   harvested: boolean; // 采收/清枯后空置 = 残茬态：露枯萎主干 + 落叶满地；否则(含枯萎)始终显完整植株
+  gray: number; // 久枯渐进失色强度 0..1：随机灰化部分叶片(随机位置/面积)
 }
 
 interface LeafEntry { ai: number; frame: string; flipX: boolean; sJit: number; wJit: number; lenJit: number; rJit: number; droopK: number; chaos: number;
@@ -228,7 +235,9 @@ export class CornPlantView extends Container {
       // 按帧最长边归一：干枯/卷曲叶帧偏大→缩到与健康/黄叶相称的长度，消除「枯萎株大很多」
       const norm = LEAF_REF_LEN / Math.max(tex.width, tex.height || 1);
       const ls = aScale * LEAF_SCALE * e.sJit * norm * leafTypeScale(e.frame); // 整体大小：归一 × 叶型 × sJit
-      lf.tint = p.partTint;
+      // #2 久枯渐进失色：随机灰化部分叶片(hash<gray → 该叶拉向暖灰)，gray 越大灰化叶越多(随机位置/面积)
+      const grayed = p.gray > 0 && plantHash(this.plotId, this.slotIdx, 210 + e.ai) < p.gray;
+      lf.tint = grayed ? lerpC(p.partTint, 0x8c847a, 0.6) : p.partTint;
       lf.alpha = 1;
       lf.visible = true;
       if (e.fallen) {
