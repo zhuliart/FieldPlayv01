@@ -145,7 +145,7 @@ const SEED: [CropKey, number][] = [
 ];
 
 // 学习成果存档 schema 版本：结构变更时 +1 → 旧档自动作废（不读、回落 fresh），防版本错配注入脏数据
-const BRAIN_SAVE_V = 2; // schema 版本：结构变更 +1 自动作废旧档。v2=新增情境偏置 ctxKind(任务 B)
+const BRAIN_SAVE_V = 3; // schema/语义版本：+1 自动作废旧档。v2=情境偏置 ctxKind；v3=养护类回报语义修正(浇水等不再被学成亏本→作废旧的负偏置)
 
 // 经济常量（原样移植原型）
 const AI_START = 2500;
@@ -672,12 +672,14 @@ export class World {
     const b = this.brain;
     const powerSpent = Math.max(0, la.bat0 - this.robotBattery);
     const batGain = Math.max(0, this.robotBattery - la.bat0);
-    // 投资类(播种/翻耕/买种/买料/清枯)收益在「未来收成」、当下净资产不升甚至降(种子/料钱不计入 netWorth)→
-    // 若仍用净资产增量当回报，会把投资学成"亏本"→机器人不肯种地、撂荒。故投资类用其预期价值(value)作正向塑形回报。
-    const invest = la.ck === 'plant' || la.ck === 'till' || la.ck === 'buyseed' || la.ck === 'buyres' || la.ck === 'clear';
+    // 投资/养护类收益在「未来收成」(作物存活/生长/护苗)、当下净资产不升甚至降(种子/料/电不计入 netWorth)→
+    // 若用净资产增量当回报，会把它们学成"亏本"→ 越学越不愿做：机器人不肯种地撂荒、且【晴天该浇水也不浇】(浇水不涨净资产只耗电→kind['water'] 被学到 −3 压制)。
+    // 故这些任务用其预期价值(value)作正向塑形回报。养护类(浇水/施肥/排水/保温/除草)只在 needWater/needFert/天气 门控满足时才进候选 → 正向塑形不会导致过量养护。
+    const invest = la.ck === 'plant' || la.ck === 'till' || la.ck === 'buyseed' || la.ck === 'buyres' || la.ck === 'clear'
+      || la.ck === 'water' || la.ck === 'fert' || la.ck === 'drain' || la.ck === 'cover' || la.ck === 'weed' || la.ck === 'weedm';
     const r = invest
       ? Math.max(0.4, la.value) - powerSpent * POWER_VALUE * 0.05
-      : (this.netWorth() - la.nw0) / 1000 - powerSpent * POWER_VALUE * 0.1 + batGain * POWER_VALUE * 0.02; // 其余按净资产增量 − 耗电 + 充电价值
+      : (this.netWorth() - la.nw0) / 1000 - powerSpent * POWER_VALUE * 0.1 + batGain * POWER_VALUE * 0.02; // 其余(收/卖/入库/充电)按净资产增量 − 耗电 + 充电价值
     const pred = b.wValue * la.value + b.wUrgency * la.urgency - b.wPower * la.power + (b.kind[la.ck] || 0);
     const err = Math.max(-3, Math.min(3, r - pred)); // 误差截断 → 稳定
     const a = 0.015;
