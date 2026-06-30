@@ -108,10 +108,10 @@ async function boot() {
   )).filter((x): x is WeedKind => !!x);
 
   // 裸眼3D破框模式资源：透明银框 + 两株专用静态破框植株(酸模/蛇莓，与示范图一致)
-  const [frameTex, heroTex1, heroTex2] = await Promise.all([
-    Assets.load<Texture>(av('assets/newbg/frame.png')).catch(() => null),
-    Assets.load<Texture>(av('assets/newbg/frame_out_plant1.png')).catch(() => null),
-    Assets.load<Texture>(av('assets/newbg/frame_out_plant2.png')).catch(() => null),
+  const av3 = (n: string) => Assets.load<Texture>(av(`assets/newbg/${n}.png`)).catch(() => null);
+  const [frame3, frame4, fPlant, fPlant3, fPlant4, fInsect, fInsect2, fRobot] = await Promise.all([
+    av3('frame3'), av3('frame4'), av3('frameOutinplant'), av3('frame_out_plant3'), av3('frame_out_plant4'),
+    av3('frameOutinsect'), av3('frameOutinsect2'), av3('robotFrameout'),
   ]);
 
   // —— 场景图层 ——
@@ -241,25 +241,32 @@ async function boot() {
       setTimeout(() => { if (hideHint === hint) { hint.remove(); hideHint = null; } }, 1950);
     }
   };
-  // —— 大屏展示模式（裸眼 3D 近似）：进入时隐藏 HUD、做立体沙盘透视 + 层间视差；退出时恢复 ——
-  // —— 裸眼3D · 破框模式（按 P）：银框 + 左下酸模/右下蛇莓破框主角株，跟随场景实时光影 ——
+  // —— 裸眼3D · 破框展示（按 P 循环：关→Demo1→Demo2→关）：两套场景按用户 demo 组装 ——
   let hidUiForNaked = false;
+  const E = (tex: Texture | null, cx: number, cy: number, heightPx: number, anchorY: number, sway: boolean, phase: number) =>
+    tex ? [{ tex, cx, cy, heightPx, anchorY, sway, phase }] : [];
   const naked3d = installNaked3D({
-    frameTex: frameTex ?? Texture.WHITE,
-    heroes: [
-      // 左下：酸模。再缩小；压住左/下银边内沿破框，但整株(含叶尖)留在画框外边界以内、不裁切
-      ...(heroTex1 ? [{ tex: heroTex1, cx: STAGE_W * 0.118, by: STAGE_H * 0.99, heightPx: STAGE_H * 0.38, windPhase: 0.0 }] : []),
-      // 右下：蛇莓(宽低)。再缩小；压右/下银边内沿破框、整株留外框内，随风错峰
-      ...(heroTex2 ? [{ tex: heroTex2, cx: STAGE_W * 0.862, by: STAGE_H * 0.99, heightPx: STAGE_H * 0.24, windPhase: 2.1 }] : []),
+    scenes: [
+      { name: 'Demo1', frameTex: frame3 ?? Texture.WHITE, elements: [ // 深框 + 右下花丛 + 左框大甲虫 + 底栏小甲虫
+        ...E(fPlant, STAGE_W * 0.81, STAGE_H * 0.985, STAGE_H * 0.16, 1, true, 0.0),    // foliage 底
+        ...E(fPlant3, STAGE_W * 0.78, STAGE_H * 0.985, STAGE_H * 0.40, 1, true, 0.7),   // 花茎1
+        ...E(fPlant4, STAGE_W * 0.87, STAGE_H * 0.985, STAGE_H * 0.43, 1, true, 1.6),   // 花茎2
+        ...E(fInsect, STAGE_W * 0.043, STAGE_H * 0.667, STAGE_H * 0.19, 0.5, false, 0), // 左框大甲虫
+        ...E(fInsect2, STAGE_W * 0.71, STAGE_H * 0.93, STAGE_H * 0.06, 0.5, false, 0),  // 底栏小甲虫
+      ] },
+      { name: 'Demo2', frameTex: frame4 ?? Texture.WHITE, elements: [ // 白框 + 右下机器人 + 其右花 + 左框甲虫
+        ...E(fRobot, STAGE_W * 0.74, STAGE_H * 0.95, STAGE_H * 0.30, 1, false, 0),      // 机器人
+        ...E(fPlant3, STAGE_W * 0.90, STAGE_H * 0.92, STAGE_H * 0.22, 1, true, 0.7),    // 花
+        ...E(fPlant4, STAGE_W * 0.935, STAGE_H * 0.91, STAGE_H * 0.20, 1, true, 1.6),   // 花
+        ...E(fInsect, STAGE_W * 0.027, STAGE_H * 0.81, STAGE_H * 0.075, 0.5, false, 0), // 左框甲虫
+      ] },
     ],
-    light: () => ({ relight: field.relight, shadowAlpha: field.shadowAlpha, lum: field.sceneLum }),
+    light: () => ({ lum: field.sceneLum }),
     badgeHost: wrap,
     onEnter: () => { if (!gameHud.isUiHidden) { toggleUi(); hidUiForNaked = true; } },
     onExit: () => { if (hidUiForNaked) { toggleUi(); hidUiForNaked = false; } },
   });
-  // 银框 + 破框主角层加到 stage 顶（z 序：游戏 → 银框 → 主角株）
-  app.stage.addChild(naked3d.frameLayer);
-  app.stage.addChild(naked3d.heroLayer);
+  app.stage.addChild(naked3d.root); // 当前场景容器加到 stage 顶（z 序：游戏 → 画框 → 破框元素）
 
   // 桌面键盘：T=一键隐藏全部 UI；E=单独开关基站 UI；P=裸眼3D破框模式（避开输入框/系统快捷键）
   window.addEventListener('keydown', (e) => {
@@ -268,7 +275,7 @@ async function boot() {
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     if (e.key === 't' || e.key === 'T') toggleUi();
     else if (e.key === 'e' || e.key === 'E') gameHud.toggleStation();
-    else if (e.key === 'p' || e.key === 'P') naked3d.toggle();
+    else if (e.key === 'p' || e.key === 'P') naked3d.cycle();
   });
   // 移动端：三连击屏幕（同一区域内 3 次快速点按 → 与正常分散的游戏点击区分）
   let taps: number[] = []; let tapX = 0; let tapY = 0;
@@ -350,7 +357,7 @@ async function boot() {
     daynight.update(world.tod, world.toggles.dayTint, dtMS);
     particles.update(dtMS);
     gameHud.update(dtMS);
-    naked3d.update(dtMS); // 裸眼3D破框模式：银框 + 主角株生长动画（关闭时早退、零开销）
+    naked3d.update(dtMS); // 裸眼3D破框展示：当前场景元素随风/顶光（关闭时早退、零开销）
 
     // 边缘补全背景：约每 700ms 刷新（节流）
     backdropAcc += dtMS;

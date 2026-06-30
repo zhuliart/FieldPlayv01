@@ -1,99 +1,76 @@
-// 裸眼 3D 模式（按 P）—— 破框（break-frame）效果
+// 裸眼 3D 模式（按 P 循环）—— 破框（break-frame）多场景展示
 // ─────────────────────────────────────────────────────────────────────────────
-// 银色相框 = 一扇「窗」。留在框内的内容在玻璃之后；画在框「之上」、越过银边内沿的前景大植株
-// 则冲到玻璃之前、朝观众弹出。两株静态写实植株(酸模/蛇莓)压住左下/右下银边内沿破框扑出，
-// 整株完整留在外框以内(不被屏幕边缘裁切→不"露陷")。
+// 银色相框 = 一扇「窗」。留框内的内容在玻璃后；画在框「之上」、压过银边内沿的前景元素
+// （花丛/机器人/昆虫）冲到玻璃前、朝观众弹出。背景=游戏本体（框内即当前农场画面）。
+// 多套「场景」(各=一个画框 + 若干破框元素，按用户 demo 组装)；P 键循环：关 → 场景1 → 场景2 → 关。
 //
-// 动效极简(按用户要求)：不做生长动画；只做「轻微、偶尔的随风摆动」+ 接地投影。
-// 摆动 = 阵风包络(多数时间近静止，偶尔来一阵)×轻微颤动，绕根部旋转，幅度很小。
-// 投影/色罩跟随 Field 的实时 relight + shadowAlpha → 与场景昼夜/天气一致。
+// 三条铁律（勿回退）：① 元素压银边内沿出框（不缩在框内）；② 整体留在画框外边界(舞台 0..1280×0..720)以内、
+// 不被屏幕边缘裁切（露陷）；③ 框与元素全程不透明（框中心透明=PNG 自带 alpha=窗口）。
+// 动效极简：植物轻微偶尔随风摆（绕根锚点）；昆虫/机器人静止。
+// 单独打光：与画面互补的室内顶光（场景冷→元素暖、场景暖→元素冷，恒亮，展柜射灯感）。
 //
-// z 序(main 注入 stage 顶)：…游戏… → frameLayer(银框) → heroLayer(破框主角株)。
-// 纯叠加层：关闭即隐藏，对游戏本体零影响。
+// z 序（main 注入 stage 顶）：…游戏… → 当前场景容器(画框 → 破框元素)。
 
 import { Container, Sprite, Texture } from 'pixi.js';
 import { STAGE_W, STAGE_H } from '../data/baseCorners';
 
-export interface HeroSpec {
-  tex: Texture;       // 静态成熟植株图(底部对齐)
-  cx: number;         // 根部 X(舞台坐标)
-  by: number;         // 根部 Y(舞台坐标，略低于框底内沿)
-  heightPx: number;   // 显示高(已按"别太大"收敛)
-  windPhase: number;  // 随风相位错峰(两株不同步)
+export interface Element {
+  tex: Texture;
+  cx: number; cy: number; // 位置(舞台坐标)
+  heightPx: number;       // 显示高
+  anchorY: number;        // 锚点 y：1=底部(花/机器人坐地)，0.5=居中(昆虫贴边框)
+  sway: boolean;          // 是否随风摆(植物 true；昆虫/机器人 false)
+  phase: number;          // 随风相位错峰
 }
+export interface Scene { name: string; frameTex: Texture; elements: Element[]; }
 
 export interface Naked3DOpts {
-  frameTex: Texture;
-  heroes: HeroSpec[];
-  light: () => { relight: number; shadowAlpha: number; lum: number };
+  scenes: Scene[];
+  light: () => { lum: number };
   badgeHost: HTMLElement;
-  onEnter?: () => void;
-  onExit?: () => void;
+  onEnter?: () => void; // 首次进入(从关→某场景)：隐藏 HUD
+  onExit?: () => void;  // 退出(→关)：恢复 HUD
 }
 
 export interface Naked3DHandle {
-  toggle(): boolean;
+  cycle(): void;        // P：关→场景1→场景2→…→关
   readonly active: boolean;
-  readonly frameLayer: Container;
-  readonly heroLayer: Container;
+  readonly root: Container; // main 加到 stage 顶
   update(dtMS: number): void;
 }
 
-const ENV_RAMP = 1400;     // 进/出场包络(ms)
-const WIND_AMP = 0.045;    // 随风最大偏转(弧度，~2.6°)：很轻
-const WIND_CALM = 0.12;    // 静息底噪比例(无阵风时只剩极轻颤动)
-
-// 程序生成的软椭圆阴影贴图(白底→可 tint 上色)
-let SHADOW_TEX: Texture | null = null;
-function shadowTex(): Texture {
-  if (SHADOW_TEX) return SHADOW_TEX;
-  const c = document.createElement('canvas'); c.width = 128; c.height = 128;
-  const g = c.getContext('2d')!;
-  const grad = g.createRadialGradient(64, 64, 4, 64, 64, 62);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.6, 'rgba(255,255,255,0.5)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = grad; g.beginPath(); g.arc(64, 64, 62, 0, Math.PI * 2); g.fill();
-  SHADOW_TEX = Texture.from(c);
-  return SHADOW_TEX;
-}
-
+const WIND_AMP = 0.045, WIND_CALM = 0.12;
+const TOP_COOL = 0xcdd9ff, TOP_WARM = 0xffd0a0; // 互补顶光：场景暗→暖、场景亮→冷
 function lerpColor(a: number, b: number, t: number): number {
   const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
   const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
   return ((Math.round(ar + (br - ar) * t)) << 16) | ((Math.round(ag + (bg - ag) * t)) << 8) | Math.round(ab + (bb - ab) * t);
 }
-// 互补顶光色：场景越暗(夜·冷蓝) → 植株越暖(琥珀)；场景越亮(昼·暖白) → 植株越冷。室内展柜射灯感、独立于场景明暗。
-const TOP_COOL = 0xcdd9ff, TOP_WARM = 0xffd0a0;
 
-interface HeroRec { spec: HeroSpec; sprite: Sprite; shadow: Sprite; }
+interface SceneRec { name: string; box: Container; sprites: { sp: Sprite; el: Element }[]; }
 
 export function installNaked3D(opts: Naked3DOpts): Naked3DHandle {
-  const { frameTex, heroes, light, badgeHost, onEnter, onExit } = opts;
+  const { scenes, light, badgeHost, onEnter, onExit } = opts;
+  const root = new Container(); root.eventMode = 'none';
 
-  const frameLayer = new Container(); frameLayer.eventMode = 'none'; frameLayer.visible = false;
-  const heroLayer = new Container(); heroLayer.eventMode = 'none'; heroLayer.visible = false;
-
-  const frame = new Sprite(frameTex);
-  frame.width = STAGE_W; frame.height = STAGE_H;
-  frameLayer.addChild(frame);
-
-  const recs: HeroRec[] = heroes.map((spec) => {
-    const shadow = new Sprite(shadowTex()); shadow.anchor.set(0.5, 0.5); shadow.tint = 0x1c241e;
-    const sprite = new Sprite(spec.tex); sprite.anchor.set(0.5, 1); // 根部锚点 → 摆动绕根、随风不移根
-    const scale = spec.heightPx / (spec.tex.height || 1);
-    sprite.scale.set(scale);
-    sprite.position.set(spec.cx, spec.by);
-    const w = (spec.tex.width || 100) * scale;
-    shadow.position.set(spec.cx + w * 0.1, spec.by - spec.heightPx * 0.01);
-    shadow.scale.set((w * 0.8) / 128, (w * 0.3) / 128);
-    heroLayer.addChild(shadow, sprite);
-    return { spec, sprite, shadow };
+  // 预建所有场景容器（画框在底、破框元素在上），只显当前
+  const recs: SceneRec[] = scenes.map((sc) => {
+    const box = new Container(); box.eventMode = 'none'; box.visible = false;
+    const frame = new Sprite(sc.frameTex); frame.width = STAGE_W; frame.height = STAGE_H; box.addChild(frame);
+    const sprites = sc.elements.map((el) => {
+      const sp = new Sprite(el.tex); sp.anchor.set(0.5, el.anchorY);
+      sp.scale.set(el.heightPx / (el.tex.height || 1));
+      sp.position.set(el.cx, el.cy);
+      box.addChild(sp);
+      return { sp, el };
+    });
+    root.addChild(box);
+    return { name: sc.name, box, sprites };
   });
 
-  let active = false, env = 0, t = 0;
+  let idx = -1, t = 0; // idx: -1=关，0..n-1=场景
 
-  // —— 分辨率角标 ——
+  // —— 角标 ——
   const badge = document.createElement('div');
   badge.style.cssText =
     'position:absolute; top:14px; left:14px; z-index:120; display:none; pointer-events:none;' +
@@ -104,41 +81,33 @@ export function installNaked3D(opts: Naked3DOpts): Naked3DHandle {
   const refreshBadge = () => {
     const dpr = +(window.devicePixelRatio || 1).toFixed(2);
     const iw = window.innerWidth, ih = window.innerHeight;
-    badge.innerHTML = `🖼️ <b>裸眼3D · 破框模式</b><br>屏幕 ${screen.width}×${screen.height} · 窗口 ${iw}×${ih}<br>比例 ${(iw / Math.max(1, ih)).toFixed(3)} · DPR ${dpr}<br><span style="opacity:.7">按 P 退出</span>`;
+    badge.innerHTML = `🖼️ <b>裸眼3D · 破框 ${idx + 1}/${recs.length}</b>（${recs[idx]?.name || ''}）<br>屏幕 ${screen.width}×${screen.height} · 窗口 ${iw}×${ih}<br>比例 ${(iw / Math.max(1, ih)).toFixed(3)} · DPR ${dpr}<br><span style="opacity:.7">按 P 切换/退出</span>`;
   };
-  window.addEventListener('resize', () => { if (active) refreshBadge(); });
+  window.addEventListener('resize', () => { if (idx >= 0) refreshBadge(); });
 
-  const toggle = (): boolean => {
-    active = !active;
-    if (active) { refreshBadge(); badge.style.display = 'block'; frameLayer.visible = true; heroLayer.visible = true; env = 0; onEnter?.(); }
-    else { frameLayer.visible = false; heroLayer.visible = false; badge.style.display = 'none'; onExit?.(); } // 即时隐藏(不做透明淡出)
-    return active;
+  const show = (i: number) => recs.forEach((r, k) => (r.box.visible = k === i));
+
+  const cycle = (): void => {
+    const was = idx;
+    idx = idx + 1 >= recs.length ? -1 : idx + 1; // 关→0→1→…→关
+    show(idx);
+    if (idx >= 0) { refreshBadge(); badge.style.display = 'block'; if (was < 0) onEnter?.(); }
+    else { badge.style.display = 'none'; onExit?.(); }
   };
 
   const update = (dtMS: number) => {
-    if (!active) return; // 关闭即停(已即时隐藏)
-    env += (1 - env) * Math.min(1, (dtMS / ENV_RAMP) * 3); // 仅用于入场「沉降」位移(非透明)
-    frame.alpha = 1; // 框不透明(中间透明=窗口，靠 PNG 自带 alpha；不叠额外透明效果)
+    if (idx < 0) return;
     t += dtMS;
-
-    const { shadowAlpha, lum } = light();
-    // 互补顶光：与画面冷暖相反，恒亮(室内射灯感)。场景冷(夜)→暖；场景暖(昼)→冷。
-    const warmth = Math.max(0, Math.min(1, 1 - lum));
-    const topLight = lerpColor(TOP_COOL, TOP_WARM, warmth);
-    for (const r of recs) {
-      const ph = r.spec.windPhase;
-      // 阵风包络：两条慢正弦相乘 → 多数时间≈0(静息)，偶尔同号叠加成一阵风(确定性、无随机)
-      const gust = Math.max(0, Math.sin(t / 6100 + ph) * Math.sin(t / 9300 + ph * 1.7));
-      const flutter = Math.sin(t / 540 + ph * 3);
-      const sway = WIND_AMP * (WIND_CALM + (1 - WIND_CALM) * gust) * flutter;
-      r.sprite.rotation = sway;     // 绕根部轻摆(锚点在根 → 不移根)
-      r.sprite.tint = topLight;     // 单独打光：与游戏画面互补的顶光(冷暖相反、恒亮、像展柜射灯)
-      r.sprite.alpha = 1;           // 植株不透明
-      r.shadow.tint = 0x1c241e;
-      r.shadow.alpha = shadowAlpha * 0.9; // 阴影本就半透(随实时光照)，与"植株不透明"无关
-      r.sprite.y = r.spec.by - (1 - env) * 22; // 入场轻微沉降(位置动效，非透明)
+    const { lum } = light();
+    const topLight = lerpColor(TOP_COOL, TOP_WARM, Math.max(0, Math.min(1, 1 - lum))); // 互补顶光
+    for (const { sp, el } of recs[idx].sprites) {
+      sp.tint = topLight; sp.alpha = 1;
+      if (el.sway) { // 植物：阵风包络×颤动，绕锚点轻摆
+        const gust = Math.max(0, Math.sin(t / 6100 + el.phase) * Math.sin(t / 9300 + el.phase * 1.7));
+        sp.rotation = WIND_AMP * (WIND_CALM + (1 - WIND_CALM) * gust) * Math.sin(t / 540 + el.phase * 3);
+      }
     }
   };
 
-  return { toggle, get active() { return active; }, frameLayer, heroLayer, update };
+  return { cycle, get active() { return idx >= 0; }, root, update };
 }
